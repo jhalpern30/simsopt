@@ -120,6 +120,9 @@ jobs:
         cd SPEC
         pwd
         ls -l
+    
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
 
     # For some reason, installing py_spec does not install the dependencies f90nml and h5py. Therefore I installed these manually above.
     - name: Install py_spec
