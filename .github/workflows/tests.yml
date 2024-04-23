@@ -14,7 +14,6 @@ on:
     tags-ignore: [v*]
   pull_request:
     branches-ignore: [master]
-  workflow_dispatch:
 
 jobs:
   test:
@@ -122,9 +121,6 @@ jobs:
         pwd
         ls -l
     
-    - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v3
-
     # For some reason, installing py_spec does not install the dependencies f90nml and h5py. Therefore I installed these manually above.
     - name: Install py_spec
       run: |
@@ -185,6 +181,9 @@ jobs:
     - name: Install coverage dependencies
       if: contains(matrix.test-type, 'unit')
       run: pip install coverage
+        
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
 
     - name: Run tests on 1 process using coverage
       if: contains(matrix.test-type, 'unit')
