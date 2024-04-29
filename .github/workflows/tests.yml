@@ -109,6 +109,7 @@ jobs:
       with:
         repository: PrincetonUniversity/SPEC
         path: SPEC
+        ref: hotfix_allocation_bug
      
     - name: ls -l again
       run: |
