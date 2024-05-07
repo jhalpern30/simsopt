@@ -1,6 +1,7 @@
 import logging
 import os
 import unittest
+import ipdb
 
 import numpy as np
 from monty.tempfile import ScratchDir
@@ -135,6 +136,7 @@ class SpecTests(unittest.TestCase):
         Set a SPEC profile of a non-cumulative quantity (surface current in this example)
         and try to modify it.
         """
+        ipdb.set_trace()
 
         filename = os.path.join(TEST_DIR, 'RotatingEllipse_Nvol8.sp')
 
@@ -167,6 +169,7 @@ class SpecTests(unittest.TestCase):
         Set a SPEC profile of a cumulative quantity (volume current in this example)
         and tries to modify it.
         """
+        ipdb.set_trace()
 
         filename = os.path.join(TEST_DIR, 'RotatingEllipse_Nvol8.sp')
 

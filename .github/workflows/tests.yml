@@ -181,7 +181,7 @@ jobs:
 
     - name: Install coverage dependencies
       if: contains(matrix.test-type, 'unit')
-      run: pip install coverage
+      run: pip install coverage ipdb
         
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3
