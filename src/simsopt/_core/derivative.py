@@ -187,6 +187,7 @@ class Derivative:
                 derivs.append(local_derivs)
 
         if as_derivative:
+            assert len(derivs)==len(keys)
             return Derivative({k: d for k, d in zip(keys, derivs)})
         else:
             return np.concatenate(derivs)
