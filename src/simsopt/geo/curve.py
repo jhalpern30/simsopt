@@ -11,7 +11,7 @@ from .._core.derivative import Derivative
 from .jit import jit
 from .plotting import fix_matplotlib_3d
 
-__all__ = ['Curve', 'RotatedCurve', 'curves_to_vtk', 'create_equally_spaced_curves', 'create_equally_spaced_windowpane_curves', 'new_windowpane_curve_on_max_error', 'JaxCurve', 'create_equally_spaced_planar_curves'] 
+__all__ = ['Curve', 'RotatedCurve', 'curves_to_vtk', 'create_equally_spaced_curves', 'create_equally_spaced_windowpane_curves', 'create_equally_spaced_windowpane_grid', 'new_windowpane_curve_on_max_error', 'JaxCurve', 'create_equally_spaced_planar_curves'] 
 
 
 @jit
@@ -611,6 +611,211 @@ class JaxCurve(sopp.Curve, Curve):
         return Derivative({self: self.dtorsion_by_dcoeff_vjp_jax(self.get_dofs(), v)})
 
 
+
+
+
+
+class RotatedCurve(sopp.Curve, Curve):
+    """
+    RotatedCurve inherits from the Curve base class.  It takes an
+    input a Curve, rotates it about the ``z`` axis by a toroidal angle
+    ``phi``, and optionally completes a reflection when ``flip=True``.
+    """
+
+    def __init__(self, curve, phi, flip):
+        self.curve = curve
+        sopp.Curve.__init__(self, curve.quadpoints)
+        Curve.__init__(self, depends_on=[curve])
+        self._phi = phi
+        self.rotmat = np.asarray(
+            [[cos(phi), -sin(phi), 0],
+             [sin(phi), cos(phi), 0],
+             [0, 0, 1]]).T
+        if flip:
+            self.rotmat = self.rotmat @ np.asarray(
+                [[1, 0, 0],
+                 [0, -1, 0],
+                 [0, 0, -1]])
+        self.rotmatT = self.rotmat.T.copy()
+
+    def get_dofs(self):
+        """
+        RotatedCurve does not have any dofs of its own.
+        This function returns null array
+        """
+        return np.array([])
+
+    def set_dofs_impl(self, d):
+        """
+        RotatedCurve does not have any dofs of its own.
+        This function does nothing.
+        """
+        pass
+
+    def num_dofs(self):
+        """
+        This function returns the number of dofs associated to the curve.
+        """
+        return self.curve.num_dofs()
+
+    def gamma_impl(self, gamma, quadpoints):
+        r"""
+        This function returns the x,y,z coordinates of the curve, :math:`\Gamma`, where :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        if len(quadpoints) == len(self.curve.quadpoints) \
+                and np.sum((quadpoints-self.curve.quadpoints)**2) < 1e-15:
+            gamma[:] = self.curve.gamma() @ self.rotmat
+        else:
+            self.curve.gamma_impl(gamma, quadpoints)
+            gamma[:] = gamma @ self.rotmat
+
+    def gammadash_impl(self, gammadash):
+        r"""
+        This function returns :math:`\Gamma'(\varphi)`, where :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        gammadash[:] = self.curve.gammadash() @ self.rotmat
+
+    def gammadashdash_impl(self, gammadashdash):
+        r"""
+        This function returns :math:`\Gamma''(\varphi)`, where :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        gammadashdash[:] = self.curve.gammadashdash() @ self.rotmat
+
+    def gammadashdashdash_impl(self, gammadashdashdash):
+        r"""
+        This function returns :math:`\Gamma'''(\varphi)`, where :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        gammadashdashdash[:] = self.curve.gammadashdashdash() @ self.rotmat
+
+    def dgamma_by_dcoeff_impl(self, dgamma_by_dcoeff):
+        r"""
+        This function returns
+
+        .. math::
+            \frac{\partial \Gamma}{\partial \mathbf c}
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        dgamma_by_dcoeff[:] = self.rotmatT @ self.curve.dgamma_by_dcoeff()
+
+    def dgammadash_by_dcoeff_impl(self, dgammadash_by_dcoeff):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma'}{\partial \mathbf c}
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+        """
+
+        dgammadash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadash_by_dcoeff()
+
+    def dgammadashdash_by_dcoeff_impl(self, dgammadashdash_by_dcoeff):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma''}{\partial \mathbf c}
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        dgammadashdash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadashdash_by_dcoeff()
+
+    def dgammadashdashdash_by_dcoeff_impl(self, dgammadashdashdash_by_dcoeff):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma'''}{\partial \mathbf c}
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        dgammadashdashdash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadashdashdash_by_dcoeff()
+
+    def dgamma_by_dcoeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \Gamma}{\partial \mathbf c} 
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.dgamma_by_dcoeff_vjp(v)
+
+    def dgammadash_by_dcoeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \Gamma'}{\partial \mathbf c} 
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.dgammadash_by_dcoeff_vjp(v)
+
+    def dgammadashdash_by_dcoeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \Gamma''}{\partial \mathbf c} 
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.dgammadashdash_by_dcoeff_vjp(v)
+
+    def dgammadashdashdash_by_dcoeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \Gamma'''}{\partial \mathbf c} 
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+
+        """
+
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.dgammadashdashdash_by_dcoeff_vjp(v)
+
+    @property
+    def flip(self):
+        return True if self.rotmat[2][2] == -1 else False
+        
 class RotatedCurve(sopp.Curve, Curve):
     """
     RotatedCurve inherits from the Curve base class.  It takes an
@@ -813,7 +1018,7 @@ class RotatedCurve(sopp.Curve, Curve):
         return True if self.rotmat[2][2] == -1 else False
 
 
-def curves_to_vtk(curves, filename, close=False, pointData=None):
+def curves_to_vtk(curves, filename, close=False, pointData=None, pointName=None):
     """
     Export a list of Curve objects in VTK format, so they can be
     viewed using Paraview. This function requires the python package ``pyevtk``,
@@ -839,12 +1044,16 @@ def curves_to_vtk(curves, filename, close=False, pointData=None):
         y = np.concatenate([c.gamma()[:, 1] for c in curves])
         z = np.concatenate([c.gamma()[:, 2] for c in curves])
         ppl = np.asarray([c.gamma().shape[0] for c in curves])
-    data = np.concatenate([i*np.ones((ppl[i], )) for i in range(len(curves))])
 
-    if pointData is None:
-        pointData=dict()
-    pointData['idx'] = data
-    polyLinesToVTK(str(filename), x, y, z, pointsPerLine=ppl, pointData=pointData)
+    if pointData==None:
+        data = np.concatenate([i*np.ones((ppl[i], )) for i in range(len(curves))])
+    else:
+        data = np.concatenate([pointData[i]*np.ones((ppl[i], )) for i in range(len(curves))])
+    
+    if pointName==None:
+        pointName='idx'
+
+    polyLinesToVTK(str(filename), x, y, z, pointsPerLine=ppl, pointData={pointName: data})
 
 
 def create_equally_spaced_curves(ncurves, nfp, stellsym, R0=1.0, R1=0.5, order=6, numquadpoints=None):
@@ -903,6 +1112,48 @@ def create_equally_spaced_windowpane_curves( ncurves, nfp, stellsym, R0, R1, Z0,
         c.set('yaw', np.pi/2 - phi[ii])
         curves.append( c )
 
+    return curves
+
+def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order,npol=None, ntor=None, numquadpoints=None, elliptical=False):
+    if numquadpoints is None:
+        numquadpoints = 15 * order
+
+    # if ntor not specified, maximize at inboard midplane
+    if ntor is None: 
+        ntor = int(np.pi/nfp*(R0-a) / (2.2 * R1))
+
+    # if npol not specified, maximize on grid with constant spacing
+    if npol is None: 
+        npol = int(2*np.pi*a / (2.3 * R1))        
+
+    curves = []
+    from .orientedcurve import OrientedCurveRTPFourier
+
+    phi = np.linspace(0,np.pi/nfp,ntor,endpoint=False)
+    dphi = np.pi/nfp * 1/ntor
+    phi = phi + dphi/2
+    # do I need to add stellarator symmetry for theta as well? Is stellsym even used? (probably not, most likely won't need it but could add it)
+    theta = np.linspace(0, 2*np.pi, npol, endpoint=False)
+
+    # fill out the space better by making the saddles wider towards outboard
+    if elliptical==True:
+        Rtor = []
+        for th in theta:
+            Rtor.append(np.pi/nfp*(R0+a*np.cos(th))/(2.2*ntor))
+    else:
+        Rtor = np.full(len(theta), R1)
+                
+    for ii in range(ntor):
+        for jj in range(npol):
+            c = OrientedCurveRTPFourier( numquadpoints, order )
+            c.set('yc(1)',Rtor[jj])
+            c.set('zs(1)',R1)
+            c.set('R0', R0)
+            c.set('a', a)
+            #c.set('Z0', Z0) # not using this, can add later if needed
+            c.set('phi', phi[ii])
+            c.set('theta', np.pi/2 - theta[jj])
+            curves.append( c )
     return curves
 
 def new_windowpane_curve_on_max_error( surf, coils, a, order, nqpts=None, dofs=None, r=None):
