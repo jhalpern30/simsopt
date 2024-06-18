@@ -11,7 +11,7 @@ from .._core.derivative import Derivative
 from .jit import jit
 from .plotting import fix_matplotlib_3d
 
-__all__ = ['Curve', 'RotatedCurve', 'curves_to_vtk', 'create_equally_spaced_curves', 'create_equally_spaced_windowpane_curves', 'create_equally_spaced_windowpane_grid', 'new_windowpane_curve_on_max_error', 'JaxCurve', 'create_equally_spaced_planar_curves'] 
+__all__ = ['Curve', 'RotatedCurve', 'curves_to_vtk', 'create_equally_spaced_curves', 'create_equally_spaced_windowpane_curves', 'create_equally_spaced_windowpane_grid', 'create_equally_spaced_windowpane_grid', 'new_windowpane_curve_on_max_error', 'JaxCurve', 'create_equally_spaced_planar_curves'] 
 
 
 @jit
@@ -1106,6 +1106,13 @@ def create_equally_spaced_windowpane_curves( ncurves, nfp, stellsym, R0, R1, Z0,
         c = OrientedCurveXYZFourier( numquadpoints, order )
         c.set('xc(1)',R1)
         c.set('zs(1)',R1)
+
+        # Add higher-order odd harmonics to approximate a square dipole
+        for n in range(3, order + 1, 2):
+            coefficient_value = R1 / n
+            c.set(f'xc({n})', coefficient_value)
+            c.set(f'zs({n})', coefficient_value)
+
         c.set('x0', R0*np.cos(phi[ii]) )
         c.set('y0', R0*np.sin(phi[ii]) )
         c.set('z0', Z0)
@@ -1148,6 +1155,13 @@ def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order,npol=N
             c = OrientedCurveRTPFourier( numquadpoints, order )
             c.set('yc(1)',Rtor[jj])
             c.set('zs(1)',R1)
+
+            # Add higher-order odd harmonics to approximate a square dipole
+            for n in range(3, order + 1, 2):
+                coefficient_value = R1 / n
+                c.set(f'yc({n})', coefficient_value)
+                c.set(f'zs({n})', coefficient_value)
+
             c.set('R0', R0)
             c.set('a', a)
             #c.set('Z0', Z0) # not using this, can add later if needed
