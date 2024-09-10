@@ -3,10 +3,15 @@ wireframe.py
 
 Definitions for the ToroidalWireframe class
 """
-
 import numpy as np
 import collections
 from simsopt.geo.surfacerzfourier import SurfaceRZFourier
+from .._core.dev import SimsoptRequires
+
+try:
+    from pyevtk.hl import linesToVTK
+except ImportError:
+    linesToVTK = None
 
 __all__ = ['ToroidalWireframe', 'windowpane_wireframe']
 
@@ -339,13 +344,35 @@ class ToroidalWireframe(object):
              'matrix_row': matrix_row, \
              'constant': constant}
 
-    def remove_constraint(self, name):
+        if self.implicits_updated:
+            ctype = self.constraints[name]['type']
+            if ctype == 'segment' or ctype == 'implicit_segment':
+                self.implicits_updated = False
 
-        if isinstance(name, str):
+    def remove_constraint(self, names):
+        """
+        Remove a constraint from the wireframe's set of constraints.
+
+        Parameters
+        ----------
+            names: string or list of strings
+                Name(s) of the constraints to be removed
+        """
+
+        if isinstance(names, str):
+            names = [names]
+
+        for name in names:
+
+            if name not in self.constraints:
+                raise ValueError('Constraint %s does not exist' % (name))
+
+            if self.implicits_updated:
+                ctype = self.constraints[name]['type']
+                if ctype == 'segment' or ctype == 'implicit_segment':
+                    self.implicits_updated = False
+
             del self.constraints[name]
-        else:
-            for item in name:
-                del self.constraints[item]
 
     def add_poloidal_current_constraint(self, current):
         """
@@ -485,7 +512,9 @@ class ToroidalWireframe(object):
 
         if not implicit:
             # Remove implicit constraints on requested segments if they exist
-            self.set_segments_free(segments)
+            for i in segments:
+                if 'implicit_segment_%d' % (i) in self.constraints:
+                    self.remove_segment_constraint(i)
             name = 'segment'
         else:
             name = 'implicit_segment'
@@ -497,8 +526,6 @@ class ToroidalWireframe(object):
 
             self.add_constraint(name + '_%d' % (segments[i]), name, \
                                 matrix_row, 0)
-
-        self.implicits_updated = False
 
     def remove_segment_constraints(self, segments, implicit=False):
         """
@@ -530,8 +557,6 @@ class ToroidalWireframe(object):
         for i in range(len(segments)):
     
             self.remove_constraint(name + '_%d' % (segments[i]))
-
-        self.implicits_updated = False
 
     def set_segments_constrained(self, segments, implicit=False):
         """
@@ -689,8 +714,6 @@ class ToroidalWireframe(object):
             elif 'implicit_segment_%d' % (segments[i]) in self.constraints:
                 self.remove_constraint('implicit_segment_%d' % (segments[i]))
 
-        self.implicits_updated = False
-
     def free_all_segments(self):
         """
         Remove any existing constraints that restrict individual segments to
@@ -702,13 +725,16 @@ class ToroidalWireframe(object):
             or self.constraints[constr]['type'] == 'implicit_segment':
                 self.remove_constraint(constr)
 
-        self.implicits_updated = False
-
     def update_implicit_constraints(self):
         """
         Determines which segments are are implicitly constrained due to all
         connected segments on one or both ends being constrained.
         """
+
+        # Clear out existing implicit constraints (they may no longer be needed)
+        for constr in list(self.constraints.keys()):
+            if self.constraints[constr]['type'] == 'implicit_segment':
+                self.remove_constraint(constr)
 
         node_sum = np.zeros((self.nNodes))
 
@@ -1160,7 +1186,7 @@ class ToroidalWireframe(object):
             raise ValueError('n_tf must not exceed the wireframe nPhi')
 
         # Indices in the toroidal dimension where current loops are to be added
-        tf_inds = np.floor(np.linspace(0, self.nPhi, n_tf, endpoint=False) \
+        tf_inds = np.ceil(np.linspace(0, self.nPhi, n_tf, endpoint=False) \
                               + 0.5*self.nPhi/n_tf)
 
         tf_currents = np.zeros(self.nSegments)
@@ -1187,7 +1213,85 @@ class ToroidalWireframe(object):
         if valid:
             self.currents[:] = new_currents[:]
         else:
-            raise RuntimeError('Constraints not met for desired currents')
+            raise ValueError('Constraints not met for desired currents')
+
+    @SimsoptRequires(linesToVTK is not None, \
+                     "to_vtk method requires pyevtk module")
+    def to_vtk(self, filename, extent='torus', extra_node_data=None, \
+               extra_segment_data=None):
+        """
+        Export the wireframe data to a VTK file, which can be read with 
+        ParaView.
+
+        Note: This function requires the ``pyevtk`` python package, which can 
+        be installed using ``pip install pyevtk``.
+
+        The following datasets will be stored in the file:
+            current: Current [A] in each segment. Positive currents flow in
+                the positive toroidal/poloidal direction.
+            constrained: 1 if the segment is constrained to carry no current;
+                0 otherwise
+            constrained_exp: 1 if the segment is explicitly constrained, 
+                i.e. set by the user to carry no current.
+            constrained_imp: 1 if the segment is implicitly constrained, 
+                i.e. it can carry no current due to neighboring segments
+                being constrained.
+
+        Parameters
+        ----------
+            filename: string
+                Name of the VTK file, without extension, to create.
+            extent: string (optional)
+                Portion of the torus to be represented in the file. Options are 
+                'half period', 'field period', and 'torus' (default).
+            extra_node_data: dictionary (optional)
+                Data values to be associated with each node.
+            extra_segment_data: dictionary (optional)
+                Data values to be associated with each segment.
+        """
+
+        if extent=='half period':
+            nHalfPeriods = 1
+        elif extent=='field period':
+            nHalfPeriods = 2
+        elif extent=='torus':
+            nHalfPeriods = self.nfp * 2
+        else:
+            raise ValueError('extent must be \'half period\', ' \
+                             + '\'field period\', or \'torus\'')
+
+        pl_segments = np.zeros((nHalfPeriods*self.nSegments, 2, 3))
+        pl_currents = np.zeros((nHalfPeriods*self.nSegments))
+        pl_constr_segs = np.zeros((nHalfPeriods*self.nSegments))
+        pl_constr_segs_exp = np.zeros((nHalfPeriods*self.nSegments))
+        pl_constr_segs_imp = np.zeros((nHalfPeriods*self.nSegments))
+  
+        for i in range(nHalfPeriods):
+            ind0 = i*self.nSegments
+            ind1 = (i+1)*self.nSegments
+            pl_segments[ind0:ind1,:,:] = self.nodes[i][:,:][self.segments[:,:]]
+            pl_currents[ind0:ind1] = self.currents[:]
+            pl_constr_segs[ind0:ind1][self.constrained_segments()] = 1
+            pl_constr_segs_exp[ind0:ind1][self.constrained_segments( \
+                                                   include='explicit')] = 1
+            pl_constr_segs_imp[ind0:ind1][self.constrained_segments( \
+                                                   include='implicit')] = 1
+
+        x = np.ascontiguousarray(pl_segments[:,:,0].reshape((-1)))
+        y = np.ascontiguousarray(pl_segments[:,:,1].reshape((-1)))
+        z = np.ascontiguousarray(pl_segments[:,:,2].reshape((-1)))
+
+        segment_data = {'current': pl_currents.reshape((-1)), \
+                        'constrained': pl_constr_segs.reshape((-1)), \
+                        'constrained_exp': pl_constr_segs_exp.reshape((-1)), \
+                        'constrained_imp': pl_constr_segs_imp.reshape((-1))}
+
+        if extra_segment_data is not None:
+            segment_data = {**segment_data, **extra_segment_data}
+
+        linesToVTK(filename, x, y, z, cellData=segment_data, \
+                   pointData=extra_node_data)
+        
 
     def make_plot_3d(self, ax=None, engine='mayavi', to_show='all', \
                      active_tol=1e-12, tube_radius=0.01, **kwargs):
@@ -1268,12 +1372,33 @@ class ToroidalWireframe(object):
 
             tube = mlab.pipeline.tube(pts, tube_radius=tube_radius)
             tube.filter.radius_factor = 1.
-            mlab.pipeline.surface(tube, **kwargs)
+            surf = mlab.pipeline.surface(tube, **kwargs)
 
-            #mlab.axes(extent=[xmin, xmax, ymin, ymax, zmin, zmax])
+            # Define a colormap similar to matplotlib's "coolwarm"
+            if 'colormap' not in kwargs:
+                x_cmap = np.linspace(0,1,255).reshape((-1,1))
+                alpha = np.ones(x_cmap.shape)
+                r_cmap = 1 - np.abs(3*x_cmap - 1.5)
+                g_cmap = 1 - np.abs(3*x_cmap - 1.5)
+                b_cmap = 1 - np.abs(3*x_cmap - 1.5)
+                r_cmap[r_cmap < 0] = 0
+                g_cmap[g_cmap < 0] = 0
+                b_cmap[b_cmap < 0] = 0
+                r_cmap[x_cmap > 0.5] = 1
+                r_cmap[x_cmap > 0.75] = -2*x_cmap[x_cmap > 0.75] + 2.5
+                b_cmap[x_cmap < 0.5] = 1
+                b_cmap[x_cmap < 0.25] = 2*x_cmap[x_cmap < 0.25] + 0.5
+                f = 0.9
+                cmap = 255 * \
+                    np.concatenate((f*r_cmap, f*g_cmap, f*b_cmap, alpha), \
+                                    axis=1)
+                surf.module_manager.scalar_lut_manager.lut.table = cmap
+                curr_lim = np.max(np.abs(pl_currents[inds]))
+                surf.module_manager.scalar_lut_manager.data_range = \
+                    (-curr_lim, curr_lim)
 
-            #cbar = mlab.colorbar(title='Current [MA]')
- 
+            return surf
+
         elif engine == 'matplotlib':
 
             import matplotlib.pylab as pl
@@ -1315,7 +1440,8 @@ class ToroidalWireframe(object):
                 'field period' (default), and 'torus'.
             quantity: string (optional)
                 Quantity to be represented in the color of each segment.
-                Options are 'currents' (default) and 'constrained segments'.
+                Options are 'currents' (default), 'nonzero currents' (i.e. show
+                only segments with nonzero current), and 'constrained segments'.
             ax: instance of the matplotlib.pyplot.Axis class (optional)
                 Axis on which to generate the plot. If None, a new plot will
                 be created.
@@ -1376,7 +1502,7 @@ class ToroidalWireframe(object):
                                    pl_segments[ind0:ind1,1,1] == self.nTheta))
                 pl_segments[ind0+loop_segs[0],1,1] = 0
 
-            if quantity=='currents':
+            if quantity=='currents' or quantity=='nonzero currents':
                 pl_quantity[ind0:ind1] = self.currents[:]*1e-6
             elif quantity=='constrained segments':
                 pl_quantity[ind0:ind1][self.constrained_segments( \
@@ -1386,9 +1512,15 @@ class ToroidalWireframe(object):
             else:
                 raise ValueError('Unrecognized quantity for plotting')
 
-        lc = LineCollection(pl_segments, **kwargs)
-        lc.set_array(pl_quantity)
-        if quantity=='currents':
+
+        if quantity=='nonzero currents':
+            inds_to_plot = np.where(pl_quantity != 0)[0]
+        else:
+            inds_to_plot = np.arange(len(pl_quantity))
+
+        lc = LineCollection(pl_segments[inds_to_plot], **kwargs)
+        lc.set_array(pl_quantity[inds_to_plot])
+        if quantity=='currents' or quantity=='nonzero currents':
             lc.set_clim(np.max(np.abs(self.currents*1e-6))*np.array([-1, 1]))
         elif quantity=='constrained segments':
             lc.set_clim([-1, 1])
@@ -1404,12 +1536,11 @@ class ToroidalWireframe(object):
         ax.set_xlabel('Toroidal index')
         ax.set_ylabel('Poloidal index')
         cb = pl.colorbar(lc)
-        if quantity=='currents':
+        if quantity=='currents' or quantity=='nonzero currents':
             cb.set_label('Current (MA)')
         elif quantity=='constrained segments':
             cb.set_label('1 = constrained; -1 = implicitly constrained; ' \
                              + '0 = free')
-
 
         ax.add_collection(lc)
 

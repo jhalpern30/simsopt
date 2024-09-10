@@ -6,7 +6,11 @@ from .magneticfieldclasses import *
 from .mgrid import *
 from .normal_field import *
 from .tracing import *
+<<<<<<< HEAD
 from .coilobjective import *
+=======
+from .wireframefield import *
+>>>>>>> wireframe_ken/wireframe
 
 __all__ = (
     biotsavart.__all__
@@ -17,5 +21,9 @@ __all__ = (
     + mgrid.__all__
     + normal_field.__all__
     + tracing.__all__
+<<<<<<< HEAD
     + coilobjective.__all__
+=======
+    + wireframefield.__all__
+>>>>>>> wireframe_ken/wireframe
 )

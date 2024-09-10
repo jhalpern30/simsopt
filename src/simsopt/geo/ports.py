@@ -5,6 +5,7 @@ Functions for checking for collisions with ports and other obstacles.
 """
 
 import numpy as np
+from abc import ABC, abstractmethod
 
 __all__ = ['PortSet', 'CircularPort', 'RectangularPort']
 
@@ -45,6 +46,8 @@ class PortSet(object):
             if port_type is None:
                 raise ValueError('port_type must be specified if loading ' \
                                  + 'from file')
+            elif isinstance(port_type, str):
+                port_type = [port_type]
             elif not hasattr(port_type, '__len__'):
                 port_type = [port_type]
 
@@ -85,6 +88,23 @@ class PortSet(object):
             self.ports.append(port)
             self.nPorts = self.nPorts + 1
 
+    def __add__(self, p):
+        """
+        Allow new port sets to be built with the "+" operator
+        """
+
+        if isinstance(p, PortSet):
+            return PortSet(ports=(self.ports + p.ports))
+
+        elif isinstance(p, RectangularPort) or isinstance(p, CircularPort):
+            p_out = PortSet(ports=self.ports)
+            p_out.add_ports([p])
+            return p_out
+
+        else:
+            raise ValueError('Addition with PortSet class instances is only ' \
+                             'supported for Port and PortSet class instances.')
+
     def load_circular_ports_from_file(self, file):
         """
         Loads a set of circular ports from a file. The file must have the CSV
@@ -111,8 +131,8 @@ class PortSet(object):
         for i in range(portdata.shape[0]):
 
             self.ports.append( \
-                CircularPort(xo = portdata[i,0], yo = portdata[i,1], \
-                             zo = portdata[i,2], ax = portdata[i,3], \
+                CircularPort(ox = portdata[i,0], oy = portdata[i,1], \
+                             oz = portdata[i,2], ax = portdata[i,3], \
                              ay = portdata[i,4], az = portdata[i,5], \
                              ir = portdata[i,6], thick = portdata[i,7], \
                              l0 = portdata[i,8], l1 = portdata[i,9]))
@@ -138,23 +158,21 @@ class PortSet(object):
         portdata = np.loadtxt(file, delimiter=',', skiprows=1)
 
         if portdata.shape[1] != 17:
-            raise ValueError('Circular ports input file must have 10 columns ' \
-                             + 'with the following data:\n' \
+            raise ValueError('Rectangular ports input file must have 17 ' \
+                             + 'columns with the following data:\n' \
                              + 'ox, oy, oz, ax, ay, az, wx, wy, wz, ' \
                              + 'hx, hy, hz, iw, ih, thick, l0, l1')
         
         for i in range(portdata.shape[0]):
 
             self.ports.append( \
-                RectangularPort(xo = portdata[i, 0], yo = portdata[i, 1], \
-                                zo = portdata[i, 2], ax = portdata[i, 3], \
+                RectangularPort(ox = portdata[i, 0], oy = portdata[i, 1], \
+                                oz = portdata[i, 2], ax = portdata[i, 3], \
                                 ay = portdata[i, 4], az = portdata[i, 5], \
                                 wx = portdata[i, 6], wy = portdata[i, 7], \
-                                wz = portdata[i, 8], hx = portdata[i, 9], \
-                                hy = portdata[i,10], hz = portdata[i,11], \
-                                iw = portdata[:,12], ih = portdata[i,13], \
-                                thick = portdata[i,14], \
-                                l0 = portdata[i,15], l1 = portdata[i,16]))
+                                wz = portdata[i, 8], iw = portdata[i, 9], \
+                                ih = portdata[i,10], thick = portdata[i,11], \
+                                l0 = portdata[i,12], l1 = portdata[i,13]))
 
             self.nPorts = self.nPorts + 1
 
@@ -199,8 +217,8 @@ class PortSet(object):
 
     def repeat_via_symmetries(self, nfp, stell_sym):
         """
-        Adds ports that are equivalent to the existing ports to uphold
-        toroidal and/or stellarator symmetry.
+        Creates a new set that contains the ports in the initial set plus 
+        additional equivalent ports the remaining field periods/half-periods.
 
         Parameters
         ----------
@@ -209,13 +227,21 @@ class PortSet(object):
             stell_sym: logical
                 If true, stellarator symmetry will be assumed and equivalent
                 ports will be created for every half-period
+
+        Returns
+        -------
+            ports_out: PortSet class instance
+                A set of all the symmetric ports, including the ones represented
+                by the calling PortSet class instance
         """
 
-        for i in range(self.nPorts):
-            newPorts = self.ports[i].repeat_via_symmetries(nfp, stell_sym, \
-                                                           include_self=False)
-            self.ports = self.ports + newPorts
-            self.nPorts += len(newPorts)
+        ports_out = PortSet()
+
+        for port in self.ports:
+
+            ports_out += port.repeat_via_symmetries(nfp, stell_sym)
+
+        return ports_out
 
     def plot(self, nEdges=100, **kwargs):
         """
@@ -248,7 +274,50 @@ class PortSet(object):
 
         return surfs
 
-class CircularPort(object):
+class Port(ABC):
+    """
+    Abstract base class for ports
+    """
+
+    @abstractmethod
+    def collides(self):
+        """
+        Determines if the user input point(s) collide with the port, with an
+        optional gap spacing enforced around the port's exterior.
+        """
+        pass
+
+    @abstractmethod
+    def repeat_via_symmetries(self):
+        """
+        Returns a PortSet class instance containing the calling Port class
+        instances as well ports with parameters transformed to equivalent
+        locations in other periods (and half-periods if stellarator symmetry
+        is assumed).
+        """
+        pass
+
+    @abstractmethod
+    def plot(self):
+        """
+        Returns handle to a three-dimensional plot with a visual depiction
+        of the port.
+        """
+        pass
+
+    def __add__(self, p):
+
+        if isinstance(p, Port):
+            return PortSet(ports=[self, p])
+
+        elif isinstance(p, PortSet):
+            return PortSet(ports=([self] + p.ports))
+
+        else:
+            raise ValueError('Addition with Port class instances is only ' \
+                             'supported for Port and PortSet class instances.')
+
+class CircularPort(Port):
     """
     Class representing a port with cylindrical geometry; specifically, with
     a circular cross section.
@@ -338,8 +407,10 @@ class CircularPort(object):
         out_r = self.ir + self.thick + gap
         out_r2 = out_r * out_r
 
-        in_axial_bounds = np.logical_and(l_proj >= self.l0 - gap, \
-                                         l_proj <= self.l1 + gap)
+        lStart = np.min([self.l0, self.l1])
+        lStop  = np.max([self.l0, self.l1])
+        in_axial_bounds = np.logical_and(l_proj >= lStart - gap, \
+                                         l_proj <= lStop  + gap)
         in_radial_bounds = r2 <= out_r2
 
         return np.logical_and(in_axial_bounds, in_radial_bounds)
@@ -358,13 +429,13 @@ class CircularPort(object):
                 ports will be created for every half-period
             include_self: logical (optional)
                 If true, the port instance calling this method will be included
-                in the returned list of ports (see below). Default is True.
+                in the returned set of ports (see below). Default is True.
 
         Returns
         -------
-            ports: list of CircularPort class instances
-                The equivalent ports, including the calling instance if 
-                include_self == True.
+            ports: PortSet class instance
+                A set of all the symmetric ports, including the one represented
+                by the calling Port class instance if `include_self`==True.
         """
 
         dphi = 2.*np.pi/nfp
@@ -386,7 +457,7 @@ class CircularPort(object):
 
                 ports.append(CircularPort(ox=oxi, oy=-oyi, oz=-ozi, \
                     ax=-axi, ay=ayi, az=azi, ir=self.ir, thick=self.thick, \
-                    l0=self.l0, l1=self.l1))
+                    l0=-self.l1, l1=-self.l0))
 
             if i > 0:
 
@@ -394,7 +465,7 @@ class CircularPort(object):
                     ax=axi, ay=ayi, az=azi, ir=self.ir, thick=self.thick, \
                     l0=self.l0, l1=self.l1))
 
-        return ports
+        return PortSet(ports=ports)
 
     def plot(self, nEdges=100, **kwargs):
         """
@@ -473,14 +544,14 @@ class CircularPort(object):
         mesh_source = mlab.pipeline.triangular_mesh_source(x, y, z, triangles)
         return mlab.pipeline.surface(mesh_source, **kwargs)
 
-class RectangularPort(object):
+class RectangularPort(Port):
     """
     Class representing a port with a rectangular cross-section.
     """
 
     def __init__(self, ox=1.0, oy=0.0, oz=0.0, ax=1.0, ay=0.0, az=0.0, \
-                 wx=0.0, wy=1.0, wz=0.0, hx=0.0, hy=0.0, hz=1.0, \
-                 iw=0.5, ih=0.5, thick=0.01, l0=0.0, l1=0.5):
+                 wx=0.0, wy=1.0, wz=0.0, iw=0.5, ih=0.5, thick=0.01, \
+                 l0=0.0, l1=0.5):
         """
         Initializes the RectangularPort class according to the geometric port
         parameters.
@@ -496,10 +567,6 @@ class RectangularPort(object):
             wx, wy, wz: floats
                 Cartesian x, y, and z components of a vector in the direction
                 spanning the width of the cross-section, assumed perpendicular
-                to the axis
-            hx, hy, hz: floats
-                Cartesian x, y, and z components of a vector in the direction
-                spanning the height of the cross-section, assumed perpendicular
                 to the axis
             iw: float
                 Inner width of the cross-section, i.e. the dimension spanned by
@@ -521,8 +588,7 @@ class RectangularPort(object):
         # Ensure that the axis and orientation vectors are nonzero
         mod_a = np.linalg.norm([ax, ay, az])
         mod_w = np.linalg.norm([wx, wy, wz])
-        mod_h = np.linalg.norm([hx, hy, hz])
-        if mod_a == 0 or mod_w == 0 or mod_h == 0:
+        if mod_a == 0 or mod_w == 0:
             raise ValueError('Vectors given by (ax, ay, az),  (wx, wy, wz), ' \
                              + 'and (hx, hy, hz) must have nonzero length')
 
@@ -533,15 +599,16 @@ class RectangularPort(object):
         self.wx = wx/mod_w
         self.wy = wy/mod_w
         self.wz = wz/mod_w
-        self.hx = hx/mod_h
-        self.hy = hy/mod_h
-        self.hz = hz/mod_h
         tol = 1e-12
-        if np.abs(self.ax*self.wx + self.ay*self.wy + self.az*self.wz) > tol or\
-           np.abs(self.ax*self.hx + self.ay*self.hy + self.az*self.hz) > tol or\
-           np.abs(self.wx*self.hx + self.wy*self.hy + self.wz*self.hz) > tol:
+        if np.abs(self.ax*self.wx + self.ay*self.wy + self.az*self.wz) > tol:
             raise ValueError('Vectors given by (ax, ay, az),  (wx, wy, wz), ' \
                              + 'and (hx, hy, hz) must be mutually perpendicuar')
+
+        # Determine the third axis (height) from the two suppied axes
+        self.hx =  self.ay*self.wz - self.az*self.wy
+        self.hy = -self.ax*self.wz + self.az*self.wx
+        self.hz =  self.ax*self.wy - self.ay*self.wx
+        assert np.abs(np.sqrt(self.hx**2 + self.hy**2 + self.hz**2) - 1) < tol
 
         self.iw = iw
         self.ih = ih
@@ -588,8 +655,10 @@ class RectangularPort(object):
                                             + (zarr - self.oz) * self.hz
         
 
-        in_axial_bounds = np.logical_and(l_proj >= self.l0 - gap, \
-                                         l_proj <= self.l1 + gap)
+        lStart = np.min([self.l0, self.l1])
+        lStop  = np.max([self.l0, self.l1])
+        in_axial_bounds = np.logical_and(l_proj >= lStart - gap, \
+                                         l_proj <= lStop  + gap)
         in_cross_section = \
             np.logical_and(np.abs(w_proj) < 0.5*self.iw + self.thick + gap, \
                            np.abs(h_proj) < 0.5*self.ih + self.thick + gap)
@@ -614,9 +683,9 @@ class RectangularPort(object):
 
         Returns
         -------
-            ports: list of RectangularPort class instances
-                The equivalent ports, including the calling instance if 
-                include_self == True.
+            ports: PortSet class instance
+                PortSet containing the equivalent ports, including the one
+                represented by the calling instance if include_self == True.
         """
 
         dphi = 2.*np.pi/nfp
@@ -638,25 +707,21 @@ class RectangularPort(object):
             wyi = self.wx*np.sin(i*dphi) + self.wy*np.cos(i*dphi)
             wzi = self.wz
 
-            hxi = self.hx*np.cos(i*dphi) - self.hy*np.sin(i*dphi)
-            hyi = self.hx*np.sin(i*dphi) + self.hy*np.cos(i*dphi)
-            hzi = self.hz
-
             if stell_sym:
 
                 ports.append(RectangularPort(ox=oxi, oy=-oyi, oz=-ozi, \
                     ax=-axi, ay=ayi, az=azi, wx=-wxi, wy=wyi, wz=wzi, \
-                    hx=-hxi, hy=hyi, hz=hzi, iw=self.iw, ih=self.ih, \
-                    thick=self.thick, l0=self.l0, l1=self.l1))
+                    iw=self.iw, ih=self.ih, thick=self.thick, \
+                    l0=-self.l1, l1=-self.l0))
 
             if i > 0:
 
                 ports.append(RectangularPort(ox=oxi, oy=oyi, oz=ozi, \
                     ax=axi, ay=ayi, az=azi, wx=wxi, wy=wyi, wz=wzi, \
-                    hx=hxi, hy=hyi, hz=hzi, iw=self.iw, ih=self.ih, \
-                    thick=self.thick, l0=self.l0, l1=self.l1))
+                    iw=self.iw, ih=self.ih, thick=self.thick, \
+                    l0=self.l0, l1=self.l1))
 
-        return ports
+        return PortSet(ports=ports)
 
     def plot(self, **kwargs):
         """

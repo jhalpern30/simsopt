@@ -22,13 +22,18 @@ using std::vector;
  *  Parameters:
  *    bool no_crossing: if true, the solution will forbid currents from crossing
  *      within the wireframe 
+ *    bool no_new_coils: if true, the solution will forbid the addition of 
+ *      currents to loops where no segments already carry current (although it
+ *      is still possible for an existing coil to be split into two coils)
  *    bool match_current: if true, added loops of current will match the current
  *      of the loop(s) adjacent to where they are added
  *    Array& A_obj: matrix corresponding to A_obj above
  *    Array& b_obj: column vector corresponding to b_obj above
- *    double default_current: loop current to add during each iteration to empty
- *      loops or to any loop if not matching existing current
+ *    double default_current: loop current increment to add during each 
+ *      iteration to empty loops or to any loop if not matching existing current
  *    double max_current: maximum magnitude for each element of `x`
+ *    int max_loop_count: maximum number of current increments to add to a 
+ *      given loop
  *    IntArray& loops: 4-column matrix giving the indices of the segments 
  *      (elements of x) bordering each loop in the wireframe
  *    IntArray& free_loops: logical array; 1 for each loop that is free
@@ -40,7 +45,7 @@ using std::vector;
  *    double lambda_P: the weighting factor lambda_P as defined above
  *    int nIter: number of iterations to perform
  *    Array& x_init: initial values of `x`
- *    IntArray& loop_count_init: signed number of loops of current added to
+ *    IntArray& loop_count_init: signed number of current increments added to
  *      each loop in the wireframe prior to the optimization (optimization will
  *      add to these numbers)
  *    int nHistory: number of intermediate solutions to record, evenly spaced
@@ -63,10 +68,10 @@ using std::vector;
  *      corresponding to the columns of `x_history`
  */
 std::tuple<Array,IntArray,Array,Array,Array,Array> GSCO(
-    bool no_crossing, bool match_current,
+    bool no_crossing, bool no_new_coils, bool match_current,
     Array& A_obj, Array& b_obj, double default_current, double max_current, 
-    IntArray& loops, IntArray& free_loops, IntArray& segments, 
-    IntArray& connections, double lambda_P, int nIter, 
+    int max_loop_count, IntArray& loops, IntArray& free_loops, 
+    IntArray& segments, IntArray& connections, double lambda_P, int nIter, 
     Array& x_init, IntArray& loop_count_init, int nHistory){
 
     int nSegs = A_obj.shape(1);
@@ -164,8 +169,9 @@ std::tuple<Array,IntArray,Array,Array,Array,Array> GSCO(
     for (int i = 0; i < nIter; ++i) {
 
         // Determine which loops are eligible for optimization
-        check_eligibility(nLoops, default_current, max_current, no_crossing, 
-                          match_current, tol, loops_rep_ptr, free_loops_rep_ptr,
+        check_eligibility(nLoops, default_current, max_current, max_loop_count,
+                          no_crossing, no_new_coils, match_current, tol, 
+                          loops_rep_ptr, free_loops_rep_ptr, loop_count_ptr, 
                           segments_ptr, connections_ptr, x_ptr, 
                           eligible_curr_ptr);
 
@@ -319,8 +325,9 @@ double compute_chi2_P(Array& x, double tol) {
  *
  */
 void check_eligibility(int nLoops, double default_current, double max_current, 
-                       bool no_crossing, bool match_current, double tol, 
-                       int* loops_rep, int* freeLoops, int* segments, 
+                       int max_loop_count, bool no_crossing, bool no_new_coils, 
+                       bool match_current, double tol, int* loops_rep, 
+                       int* freeLoops, int* loop_count, int* segments, 
                        int* connections, double* x, double* current) {
 
     #pragma omp parallel for schedule(static)
@@ -334,6 +341,14 @@ void check_eligibility(int nLoops, double default_current, double max_current,
 
         double sign = (i < nLoops) ? 1.0 : -1.0;
 
+        // Check whether adding a loop would exceed the max loop count
+        if (max_loop_count > 0) {
+            if (abs(loop_count[i % nLoops] + (int) sign) > max_loop_count) {
+                current[i] = 0.0;
+                continue;
+            }
+        }
+
         // Indices of segments forming the loop
         int ind_tor1 = loops_rep[i*4 + 0];
         int ind_pol2 = loops_rep[i*4 + 1];
@@ -341,6 +356,21 @@ void check_eligibility(int nLoops, double default_current, double max_current,
         int ind_pol4 = loops_rep[i*4 + 3];
         int loop_inds[4] = {ind_tor1, ind_pol2, ind_tor3, ind_pol4};
         double loop_sgns[4] = {1.0, 1.0, -1.0, -1.0};
+
+        // If no new coils may form, check if loop has existing active segments
+        if (no_new_coils) {
+            bool no_active_segments = true;
+            for (int j = 0; j < 4; ++j) {
+                if (abs(x[loop_inds[j]]) > tol) {
+                    no_active_segments = false;
+                    break;
+                }
+            }
+            if (no_active_segments) {
+                current[i] = 0.0;
+                continue;
+            }
+        }
 
         // If matching existing current, check for existing currents in loop
         double loop_curr = 0.0;
