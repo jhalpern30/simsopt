@@ -23,12 +23,9 @@ from .surfacerzfourier import *
 from .surfacexyzfourier import *
 from .surfacexyztensorfourier import *
 from .strain_optimization import *
-<<<<<<< HEAD
 from .hull import *
-=======
 from .wireframe import *
 from .ports import *
->>>>>>> wireframe_ken/wireframe
 
 from .permanent_magnet_grid import *
 from .orientedcurve import *
@@ -44,10 +41,6 @@ __all__ = (curve.__all__ + curvehelical.__all__ +
            surfacegarabedian.__all__ + surfacehenneberg.__all__ +
            surfacerzfourier.__all__ + surfacexyzfourier.__all__ +
            surfacexyztensorfourier.__all__ + surfaceobjectives.__all__ +
-<<<<<<< HEAD
            permanent_magnet_grid.__all__ + orientedcurve.__all__ +
-           strain_optimization.__all__ + framedcurve.__all__ + hull.__all__ + torusupgrade.__all__)
-=======
-           strain_optimization.__all__ + framedcurve.__all__ + 
-           wireframe.__all__ + ports.__all__ + permanent_magnet_grid.__all__)
->>>>>>> wireframe_ken/wireframe
+           strain_optimization.__all__ + framedcurve.__all__ + hull.__all__ + torusupgrade.__all__ +
+           wireframe.__all__ + ports.__all__)
