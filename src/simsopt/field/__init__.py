@@ -8,6 +8,7 @@ from .normal_field import *
 from .tracing import *
 from .coilobjective import *
 from .wireframefield import *
+from .magnetic_axis_helpers import *
 
 __all__ = (
     biotsavart.__all__
@@ -20,4 +21,5 @@ __all__ = (
     + tracing.__all__
     + coilobjective.__all__
     + wireframefield.__all__
+    + magnetic_axis_helpers.__all__
 )
