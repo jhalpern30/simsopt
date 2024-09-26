@@ -245,6 +245,10 @@ class MagneticFieldSum(MagneticField):
         d = super().as_dict(serial_objs_dict=serial_objs_dict)
         d["points"] = self.get_points_cart()
         return d
+    
+    def compute(self, derivatives):
+        for B in self.Bfields:
+            B.compute(derivatives)
 
     @classmethod
     def from_dict(cls, d, serial_objs_dict, recon_objs):
