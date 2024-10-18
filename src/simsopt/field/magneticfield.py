@@ -246,6 +246,7 @@ class MagneticFieldSum(MagneticField):
         d["points"] = self.get_points_cart()
         return d
     
+    # JMH
     def compute(self, derivatives):
         for B in self.Bfields:
             B.compute(derivatives)
