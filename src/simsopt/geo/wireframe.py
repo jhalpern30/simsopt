@@ -40,7 +40,7 @@ class ToroidalWireframe(object):
             Default is 1e-12.
     """
 
-    def __init__(self, surface, nPhi, nTheta, constraint_tol=1e-12, uneven_windowpanes=False, uneven_params={}):
+    def __init__(self, surface, nPhi, nTheta, constraint_tol=1e-12, uneven_grid=False):
 
         if not isinstance(surface, SurfaceRZFourier):
             raise ValueError('Surface must be a SurfaceRZFourier object')
@@ -62,34 +62,13 @@ class ToroidalWireframe(object):
         if not np.isscalar(constraint_tol) and not constraint_tol > 0:
             raise ValueError('constraint_tol must be a positive scalar')
         self.constraint_tol = constraint_tol
-            
+
         # Make copy of surface with quadrature points according to nTheta, nPhi
         qpoints_phi = list(np.linspace(0, 0.5/surface.nfp, nPhi+1))
-        qpoints_theta = list(np.linspace(0, 1., nTheta, endpoint=False))
-
-        # JMH this is for uneven windowpane sizes - modify the quadpoints in theta
-        # currently will take in two sizes - one for inboard, one for outboard - and 
-        # the poloidal locations  / 2pi to switch between these two
-        if uneven_windowpanes:
-            theta_inboard_start = uneven_params['theta_inboard_start']
-            theta_inboard_end = uneven_params['theta_inboard_end']
-            nInboard = uneven_params['nInboard']
-            nOutboard = uneven_params['nOutboard']
-            segs_per_win_plus_gap = nTheta / (nInboard + nOutboard) # win_size + win_gap
-
-            # Generate uneven spacing for the inboard side (smaller spacing)
-            # this assumes 8/2 dipole/gap ratio
-            total_inboard_points = nInboard * segs_per_win_plus_gap
-            inboard_grid = np.linspace(theta_inboard_start, theta_inboard_end, total_inboard_points)
-            # Generate uneven spacing for the outboard side (larger spacing)
-            total_outboard_points = nOutboard * segs_per_win_plus_gap
-
-            # Outboard region split into two parts (0 to theta_inboard_start and theta_inboard_end to 2pi)
-            outboard_grid_left = np.linspace(0, theta_inboard_start, total_outboard_points // 2, endpoint=False)
-            outboard_grid_right = np.linspace(theta_inboard_end, 1, total_outboard_points // 2, endpoint=True)
-
-            # Combine the inboard and outboard regions
-            qpoints_theta = np.concatenate([outboard_grid_left, inboard_grid, outboard_grid_right])
+        if uneven_grid: # JMH if uneven spacing, copy theta grid points passed into this method from windowpane_wireframe
+            qpoints_theta = surface.quadpoints_theta
+        else:
+            qpoints_theta = list(np.linspace(0, 1., nTheta, endpoint=False))
 
         self.nfp = surface.nfp
         self.surface = SurfaceRZFourier(nfp=surface.nfp, stellsym=True, \
@@ -1665,7 +1644,7 @@ class ToroidalWireframe(object):
 
 
 def windowpane_wireframe(surface, nCoils_tor, nCoils_pol, size_tor, size_pol, \
-                         gap_tor, gap_pol, constraint_tol=1e-12, uneven_windowpanes=False, uneven_params={}):
+                         gap_tor, gap_pol, constraint_tol=1e-12, uneven_grid=False):
     """
     Create a ToroidalWireframe class instance with the current constrained to
     flow only within regularly spaced rectangular loops in the grid, i.e.
@@ -1691,15 +1670,12 @@ def windowpane_wireframe(surface, nCoils_tor, nCoils_pol, size_tor, size_pol, \
             (see docstring for method check_constraints for more details).
             Default is 1e-12.
         #JMH
-        uneven_windowpanes: boolean
-            Whether or not to evenly space on the wireframe. If False, must supply
-            all uneven parameters
-        uneven_params: dictionary
-            should contain the following elements:
-            nInboard - number of inboard dipoles (smaller size)
-            nOutboard - number of outboard dipoles (larger size)
-            theta_inboard_start - theta location / 2pi where smaller dipoles start
-            theta_inboard_end - theta location / 2pi where smaller dipoles end
+        uneven_grid: boolean (optional)
+            If True, will take grid supplied in surface provided to this method
+            and use it when creating Toroidal Wireframe. Can pass in a nonuniformly
+            spaced array to obtain different size windowpanes. As of 10/24/24, only
+            uneven poloidal grids are supported. 
+
 
     Returns
     -------
@@ -1719,12 +1695,8 @@ def windowpane_wireframe(surface, nCoils_tor, nCoils_pol, size_tor, size_pol, \
     nPhi   = nCoils_tor*(size_tor + gap_tor)
     nTheta = nCoils_pol*(size_pol + gap_pol)
 
-    if uneven_windowpanes and nCoils_pol != uneven_params['nInboard'] + uneven_params['nOutboard']:
-            raise ValueError('nInboard and nOutboard must add up to nCoils_pol')
-
     wframe = ToroidalWireframe(surface, nPhi, nTheta, \
-                               constraint_tol=constraint_tol, uneven_windowpanes=uneven_windowpanes, uneven_params=uneven_params)
-
+                               constraint_tol=constraint_tol, uneven_grid=uneven_grid)
     unit_pol = size_pol + gap_pol
     unit_tor = size_tor + gap_tor
     unit_offs = unit_tor*nTheta
