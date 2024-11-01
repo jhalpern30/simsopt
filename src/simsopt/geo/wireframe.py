@@ -1695,6 +1695,11 @@ def windowpane_wireframe(surface, nCoils_tor, nCoils_pol, size_tor, size_pol, \
     nPhi   = nCoils_tor*(size_tor + gap_tor)
     nTheta = nCoils_pol*(size_pol + gap_pol)
 
+    if uneven_grid and len(surface.quadpoints_theta) != nTheta:
+        raise ValueError('Uneven grid not set consistently. Number of theta quad ' \
+                         + 'points must be equal to nCoils_pol * (size_pol + gap_pol)')
+
+
     wframe = ToroidalWireframe(surface, nPhi, nTheta, \
                                constraint_tol=constraint_tol, uneven_grid=uneven_grid)
     unit_pol = size_pol + gap_pol
