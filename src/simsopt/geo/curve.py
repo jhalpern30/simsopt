@@ -815,210 +815,9 @@ class RotatedCurve(sopp.Curve, Curve):
     @property
     def flip(self):
         return True if self.rotmat[2][2] == -1 else False
-        
-class RotatedCurve(sopp.Curve, Curve):
-    """
-    RotatedCurve inherits from the Curve base class.  It takes an
-    input a Curve, rotates it about the ``z`` axis by a toroidal angle
-    ``phi``, and optionally completes a reflection when ``flip=True``.
-    """
-
-    def __init__(self, curve, phi, flip):
-        self.curve = curve
-        sopp.Curve.__init__(self, curve.quadpoints)
-        Curve.__init__(self, depends_on=[curve])
-        self._phi = phi
-        self.rotmat = np.asarray(
-            [[cos(phi), -sin(phi), 0],
-             [sin(phi), cos(phi), 0],
-             [0, 0, 1]]).T
-        if flip:
-            self.rotmat = self.rotmat @ np.asarray(
-                [[1, 0, 0],
-                 [0, -1, 0],
-                 [0, 0, -1]])
-        self.rotmatT = self.rotmat.T.copy()
-
-    def get_dofs(self):
-        """
-        RotatedCurve does not have any dofs of its own.
-        This function returns null array
-        """
-        return np.array([])
-
-    def set_dofs_impl(self, d):
-        """
-        RotatedCurve does not have any dofs of its own.
-        This function does nothing.
-        """
-        pass
-
-    def num_dofs(self):
-        """
-        This function returns the number of dofs associated to the curve.
-        """
-        return self.curve.num_dofs()
-
-    def gamma_impl(self, gamma, quadpoints):
-        r"""
-        This function returns the x,y,z coordinates of the curve, :math:`\Gamma`, where :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        if len(quadpoints) == len(self.curve.quadpoints) \
-                and np.sum((quadpoints-self.curve.quadpoints)**2) < 1e-15:
-            gamma[:] = self.curve.gamma() @ self.rotmat
-        else:
-            self.curve.gamma_impl(gamma, quadpoints)
-            gamma[:] = gamma @ self.rotmat
-
-    def gammadash_impl(self, gammadash):
-        r"""
-        This function returns :math:`\Gamma'(\varphi)`, where :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        gammadash[:] = self.curve.gammadash() @ self.rotmat
-
-    def gammadashdash_impl(self, gammadashdash):
-        r"""
-        This function returns :math:`\Gamma''(\varphi)`, where :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        gammadashdash[:] = self.curve.gammadashdash() @ self.rotmat
-
-    def gammadashdashdash_impl(self, gammadashdashdash):
-        r"""
-        This function returns :math:`\Gamma'''(\varphi)`, where :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        gammadashdashdash[:] = self.curve.gammadashdashdash() @ self.rotmat
-
-    def dgamma_by_dcoeff_impl(self, dgamma_by_dcoeff):
-        r"""
-        This function returns
-
-        .. math::
-            \frac{\partial \Gamma}{\partial \mathbf c}
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        dgamma_by_dcoeff[:] = self.rotmatT @ self.curve.dgamma_by_dcoeff()
-
-    def dgammadash_by_dcoeff_impl(self, dgammadash_by_dcoeff):
-        r"""
-        This function returns 
-
-        .. math::
-            \frac{\partial \Gamma'}{\partial \mathbf c}
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-        """
-
-        dgammadash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadash_by_dcoeff()
-
-    def dgammadashdash_by_dcoeff_impl(self, dgammadashdash_by_dcoeff):
-        r"""
-        This function returns 
-
-        .. math::
-            \frac{\partial \Gamma''}{\partial \mathbf c}
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        dgammadashdash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadashdash_by_dcoeff()
-
-    def dgammadashdashdash_by_dcoeff_impl(self, dgammadashdashdash_by_dcoeff):
-        r"""
-        This function returns 
-
-        .. math::
-            \frac{\partial \Gamma'''}{\partial \mathbf c}
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        dgammadashdashdash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadashdashdash_by_dcoeff()
-
-    def dgamma_by_dcoeff_vjp(self, v):
-        r"""
-        This function returns the vector Jacobian product
-
-        .. math::
-            v^T \frac{\partial \Gamma}{\partial \mathbf c} 
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
-        return self.curve.dgamma_by_dcoeff_vjp(v)
-
-    def dgammadash_by_dcoeff_vjp(self, v):
-        r"""
-        This function returns the vector Jacobian product
-
-        .. math::
-            v^T \frac{\partial \Gamma'}{\partial \mathbf c} 
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
-        return self.curve.dgammadash_by_dcoeff_vjp(v)
-
-    def dgammadashdash_by_dcoeff_vjp(self, v):
-        r"""
-        This function returns the vector Jacobian product
-
-        .. math::
-            v^T \frac{\partial \Gamma''}{\partial \mathbf c} 
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
-        return self.curve.dgammadashdash_by_dcoeff_vjp(v)
-
-    def dgammadashdashdash_by_dcoeff_vjp(self, v):
-        r"""
-        This function returns the vector Jacobian product
-
-        .. math::
-            v^T \frac{\partial \Gamma'''}{\partial \mathbf c} 
-
-        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
-        coordinates of the curve.
-
-        """
-
-        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
-        return self.curve.dgammadashdashdash_by_dcoeff_vjp(v)
-
-    @property
-    def flip(self):
-        return True if self.rotmat[2][2] == -1 else False
 
 
-def curves_to_vtk(curves, filename, close=False, pointData=None, pointName=None):
+def curves_to_vtk(curves, filename, close=False, extra_data=None):
     """
     Export a list of Curve objects in VTK format, so they can be
     viewed using Paraview. This function requires the python package ``pyevtk``,
@@ -1044,16 +843,13 @@ def curves_to_vtk(curves, filename, close=False, pointData=None, pointName=None)
         y = np.concatenate([c.gamma()[:, 1] for c in curves])
         z = np.concatenate([c.gamma()[:, 2] for c in curves])
         ppl = np.asarray([c.gamma().shape[0] for c in curves])
+    data = np.concatenate([i*np.ones((ppl[i], )) for i in range(len(curves))])
+    pointData = {'idx': data}
 
-    if pointData==None:
-        data = np.concatenate([i*np.ones((ppl[i], )) for i in range(len(curves))])
-    else:
-        data = np.concatenate([pointData[i]*np.ones((ppl[i], )) for i in range(len(curves))])
-    
-    if pointName==None:
-        pointName='idx'
+    if extra_data is not None:
+        pointData = {**pointData, **extra_data}
 
-    polyLinesToVTK(str(filename), x, y, z, pointsPerLine=ppl, pointData={pointName: data})
+    polyLinesToVTK(str(filename), x, y, z, pointsPerLine=ppl, pointData=pointData)
 
 
 def create_equally_spaced_curves(ncurves, nfp, stellsym, R0=1.0, R1=0.5, order=6, numquadpoints=None):
