@@ -908,13 +908,19 @@ def create_equally_spaced_windowpane_curves(ncurves, nfp, stellsym, R0, R1, Z0, 
         curves.append( c )
     return curves
 
-def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order, b=None,npol=None, ntor=None, numquadpoints=None, elliptical=False):
+def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order, b=None,npol=None, ntor=None, numquadpoints=None):
+    # this function creates a dipole array packed into a hexagonal formation
+    # they will be circular at the inboard midplane, and will increase in toroidal
+    # length toward the outboard side due to the R dependence of the Jacobian
+    # this is rather hardcoded for my specific use case - might not be very generalizable - JMH
+    fil_distance = 0.05 # distance between dipole filaments for finite coil winding pack [m]
     if numquadpoints is None:
         numquadpoints = 15 * order 
     # if b not specified, assume vessel has circular cross section
     if b is None:
         b = a
     # use this to evenly space coils on elliptical grid
+    # must use quadrature for elliptic integral
     def generate_even_arc_angles(a, b, ntheta):
         from scipy.integrate import quad
         from scipy.optimize import root_scalar
@@ -937,40 +943,65 @@ def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order, b=Non
             else:
                 result = root_scalar(arc_length_to_theta, args=(s,), bracket=[thetas[i-1], 2*np.pi])
                 thetas[i] = result.root
-        return thetas
+        return thetas, total_arc_length
 
-    phi = np.linspace(0,np.pi/nfp,ntor,endpoint=False)
-    dphi = np.pi/nfp * 1/ntor
-    phi = phi + dphi/2
-    if a==b:
-        theta = np.linspace(0, 2*np.pi, npol, endpoint=False)
+    # Poloidal direction
+    if npol is None: 
+        _, total_arc_length = generate_even_arc_angles(a, b, 1) # get total arc length
+        npol = int(total_arc_length / (2 * R1 + fil_distance)) # figure out how many poloidal dipoles can fit for target radius
+        Rpol = total_arc_length / 2 / npol - fil_distance / 2 # adjust the poloidal length based off npol
     else:
-        theta = generate_even_arc_angles(a, b, npol)
-                
-    from .orientedcurve import OrientedCurveRTPFourier
+        Rpol = R1
+    theta, total_arc_length = generate_even_arc_angles(b, a, npol) # why do a and b need to be switched here? Def a bug, but works? 
+    dtheta = np.diff(np.append(theta, 2*np.pi)) / 2
+
+    # Toroidal direction
+    if ntor is None:
+        # if number of dipoles not specified, first determine based on inboard spacing and specified radius
+        # inboard toroidal arc length per half field period = pi/nfp * (R0-a) (or more generally, pi/nfp * (R0 + r_ellipse * cos(theta)))
+        # toroidal distance between centers in hexagonal packing = sqrt(3) * (Rdip + fil_distance/2) (i.e. 30-60-90 triangle)
+        ntor = int(np.pi/nfp*(R0-a)/np.sqrt(3)/(R1+fil_distance/2))
+        Rtor = [np.pi/(np.sqrt(3) * nfp * ntor)*(R0 + a*b / np.sqrt((b*np.cos(theta_val))**2 + (a*np.sin(theta_val))**2) * np.cos(theta_val)) 
+                - fil_distance/2 for theta_val in theta] # increase toroidal length 
+    else: 
+        # if ntor is set, just increase toroidal length relative to inboard circumference ratio (subtracting out filament spacing)
+        # this should roughly preserve filament spacing poloidally
+        Rtor = [R1*(2 * np.pi * (R0 + a*b / np.sqrt((b*np.cos(theta_val))**2 + (a*np.sin(theta_val))**2) * np.cos(theta_val)) - ntor * fil_distance)
+                    / (2 * np.pi * (R0 - a) - ntor * fil_distance) for theta_val in theta]
+    phi = np.linspace(0,np.pi/nfp,ntor,endpoint=False)
+    dphi = np.pi/nfp/ntor
+    phi = phi + dphi/2
+
+    from simsopt.geo.orientedcurve import OrientedCurveRTPFourier
     curves = []
     for ii in range(ntor):
         for jj in range(npol):
-            theta_temp = np.pi/2 - theta[jj]
+            # handle the angle offsets needed for denser packing
+            if (ii % 2 == 1):
+                theta_temp = theta[jj] + dtheta[jj]
+                Rtor_val = np.pi/(np.sqrt(3) * nfp * ntor)*(R0 + a*b / np.sqrt((b*np.cos(theta_temp))**2 + (a*np.sin(theta_temp))**2) * np.cos(theta_temp)) - fil_distance/2
+            else:
+                theta_temp = theta[jj]
+                Rtor_val = Rtor[jj]
+            # this offsets the R dependence of the Jacobian that messes with toroidal width in the cartesian->toroidal transformation
+            # not currently working perfectly but appears to be good enough for now
+            # I think this works quite well for circular vessel's though, or at least I can't tell
             # see orientedcurve.py for where these come from/how they're used
             r = a*b / np.sqrt((b*np.cos(theta_temp))**2 + (a*np.sin(theta_temp))**2)
             x_int = r * np.cos(theta_temp) * (1 - b**2/a**2)
-            # this is to offset the 1/R compression in the toroidal width of the coil that occurs in the transformation
-            # not currently working perfectly (as in this is what I thought it would be but still leaves some slight variation, 
-            # so there's something else to consider), but appears to be good enough for now
-            # I think this works quite well for circular vessel's though, or at least I can't tell
             scale = (R0 + x_int + np.sqrt((r*np.cos(theta_temp) - x_int)**2 + (r*np.sin(theta_temp))**2)) \
-                  / (R0 + x_int + np.sqrt((r*np.cos(theta_temp) - x_int)**2 + (r*np.sin(theta_temp))**2) * np.cos(theta_temp))
+                / (R0 + r*np.cos(theta_temp))
+            #print(theta_temp, scale)
+            # this works for circular
+            #scale = (R0 + a) / (R0 + a * np.cos(theta_temp))
             c = OrientedCurveRTPFourier( numquadpoints, order )
-            c.set('yc(1)',R1*scale) # toroidal direction
-            c.set('zs(1)',R1) # poloidal direction
+            c.set('yc(1)',Rtor_val*scale) # toroidal direction
+            c.set('zs(1)',Rpol) # poloidal direction
             c.set('R0', R0)
             c.set('a', a)
             c.set('b', b)
             c.set('phi', phi[ii])
-            # look into this at some point - why do I do pi/2-theta here?
-            # theta = 0 corresponds to top of vessel, and goes opposite direction
-            c.set('theta', np.pi/2 - theta[jj])
+            c.set('theta', theta_temp)
             curves.append( c )
     return curves
 
