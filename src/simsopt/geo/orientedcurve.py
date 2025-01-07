@@ -410,27 +410,21 @@ class OrientedCurveCylindricalFourier(JaxCurve):
 
 def xyz_to_rtp(gamma,R0):
     gamma_rtp = jnp.empty(gamma.shape)
-    # calculate r from x, y, z, and R0
+    # calculate r, theta, and phi from x, y, z, and R0
     gamma_rtp = gamma_rtp.at[:,0].set(jnp.sqrt(gamma[:,2]**2 + (jnp.sqrt(gamma[:,0]**2 + gamma[:,1]**2) - R0)**2) )
-    # calculate theta
     gamma_rtp = gamma_rtp.at[:,1].set(jnp.arctan2(gamma[:,2], jnp.sqrt(gamma[:,0]**2 + gamma[:,1]**2) - R0))
-    # calculate phi
     gamma_rtp = gamma_rtp.at[:,2].set(jnp.arctan2(gamma[:,1],gamma[:,0]))
-
     return gamma_rtp
 
 def rtp_to_xyz(gamma, R0):
     gamma_xyz = jnp.empty(gamma.shape)
-    # calculate x from r, theta, phi
+    # calculate x, y, and z from r, theta, phi
     gamma_xyz = gamma_xyz.at[:,0].set((R0 + gamma[:,0] * jnp.cos(gamma[:,1])) * jnp.cos(gamma[:,2]))
-    # calculate y
     gamma_xyz = gamma_xyz.at[:,1].set((R0 + gamma[:,0] * jnp.cos(gamma[:,1])) * jnp.sin(gamma[:,2]))
-    # calculate z
     gamma_xyz = gamma_xyz.at[:,2].set(gamma[:,0] * jnp.sin(gamma[:,1]))
-
     return gamma_xyz
 
-def R0_shift(gamma, R0):
+def r_shift(gamma, R0):
     gamma = gamma.at[:,0].add(R0)
     return gamma
     
@@ -442,17 +436,36 @@ def phi_shift(gamma, phi):
     gamma = gamma.at[:,2].add(phi)
     return gamma
     
-def rtp_shift_and_rotate_pure( v, R0aZ0, tp):
-    R0 = R0aZ0[0]
-    a = R0aZ0[1]
-    Z0 = R0aZ0[2] # not currently built in
+def rtp_shift_and_rotate_pure( v, R0ab, tp):
+    R0 = R0ab[0]
+    a = R0ab[1]
+    b = R0ab[2]
     theta = tp[0]
     phi = tp[1]
+    # note that for an ellipse, the radius will depend on theta, so we determine that via the equation for an ellipse
+    # first, shift to where you need to be to get the correct normal vector of the ellipse
+    v = r_shift(v,R0+x_int(a, b, theta) +jnp.sqrt((r_ellipse(a, b, theta)*jnp.cos(theta) - x_int(a, b, theta))**2 + (r_ellipse(a, b, theta)*jnp.sin(theta))**2))
+    # now, convert to rtp coordinates
+    v = xyz_to_rtp(v,R0+x_int(a, b, theta))
+    # now, shift in the toroidal direction
+    v = phi_shift(v, phi)
+    # now shift in the poloidal direction, but the angle will be slightly different in an ellipse due to x_int
+    v = theta_shift(v, jnp.arctan2(r_ellipse(a, b, theta)*jnp.sin(theta),r_ellipse(a, b, theta)*jnp.cos(theta) - x_int(a, b, theta)))
+    # convert back to xyz coordinates and return
+    return rtp_to_xyz(v, R0+x_int(a, b, theta))
 
-    return rtp_to_xyz(theta_shift(phi_shift(xyz_to_rtp(R0_shift(v,R0+a),R0), phi), theta), R0)
+# equation for an ellipse is r(theta) = x0y0 / sqrt((y0*cos(theta))**2 + (x0*sin(theta))**2), 
+# so radius in these coordinates is R0 + r(theta), will be some value between R0+x0 and R0+y0
+def r_ellipse(a, b, theta): 
+    return a*b / jnp.sqrt((b*jnp.cos(theta))**2 + (a*jnp.sin(theta))**2)
+
+# x intercept of line normal to any point on an ellipse
+def x_int(a, b, theta):
+    return r_ellipse(a, b, theta) * jnp.cos(theta) * (1 - b**2/a**2)
+
 
 def rtp_centercurve_pure(dofs, quadpoints, order):
-    R0aZ0 = dofs[0:3]
+    R0ab = dofs[0:3]
     tp = dofs[3:5]
     fmn = dofs[5:]
 
@@ -465,12 +478,23 @@ def rtp_centercurve_pure(dofs, quadpoints, order):
             gamma = gamma.at[:, i].add(coeffs[i][2 * j    ] * jnp.sin(2 * pi * (j+1) * points))
             gamma = gamma.at[:, i].add(coeffs[i][2 * j + 1] * jnp.cos(2 * pi * (j+1) * points))
 
-    return rtp_shift_and_rotate_pure( gamma, R0aZ0 , tp )
-    
+    return rtp_shift_and_rotate_pure( gamma, R0ab , tp )
     
 class OrientedCurveRTPFourier( JaxCurve ):
     """
-    OrientedCurveRTPFourier is a translated and rotated Curve in r, theta, phi coordinates.
+    OrientedCurveRTPFourier is a translated and rotated Curve in r, theta, phi coordinates, 
+    specifically to lie on an axisymmetric vacuum vessel. 
+    The dofs are the vacuum vessel parameters, 
+             - R0 = major radius
+             - a = horizontal semi-axis
+             - b = vertical semi-axis
+    And the rotation parameters, 
+            - theta = rotation in the poloidal direction
+            - phi = rotation in the toroidal direction
+    By using the r, theta, and phi coordinate system, the orientation and center of the curve
+    are easily constrained to the vacuum vessel. This is a rather specific use case for a stellarator
+    device with axisymmetric dipole arrays, and the CurvePlanarFourier object is perhaps better suited
+    for more general dipole optimization. 
     """
     def __init__(self, quadpoints, order, dofs=None ):
         if isinstance(quadpoints, int):
@@ -516,7 +540,7 @@ class OrientedCurveRTPFourier( JaxCurve ):
         
 
     def _make_names(self):
-        xyc_name = ['R0', 'a', 'Z0']
+        xyc_name = ['R0', 'a', 'b']
         ypr_name = ['theta', 'phi']
         dofs_name = []
         for c in ['x', 'y', 'z']:

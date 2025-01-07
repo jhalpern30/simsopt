@@ -888,13 +888,12 @@ def create_equally_spaced_curves(ncurves, nfp, stellsym, R0=1.0, R1=0.5, order=6
         curves.append(curve)
     return curves
 
-def create_equally_spaced_windowpane_curves( ncurves, nfp, stellsym, R0, R1, Z0, order, numquadpoints=None ):
+def create_equally_spaced_windowpane_curves(ncurves, nfp, stellsym, R0, R1, Z0, order, numquadpoints=None ):
     if numquadpoints is None:
         numquadpoints = 15 * order
 
     curves = []
     from .orientedcurve import OrientedCurveXYZFourier
-
     phi = np.linspace(0,np.pi/nfp,ncurves,endpoint=False)
     dphi = np.pi/nfp * 1/ncurves
     phi = phi + dphi/2
@@ -902,66 +901,75 @@ def create_equally_spaced_windowpane_curves( ncurves, nfp, stellsym, R0, R1, Z0,
         c = OrientedCurveXYZFourier( numquadpoints, order )
         c.set('xc(1)',R1)
         c.set('zs(1)',R1)
-
-        # Add higher-order odd harmonics to approximate a square dipole
-        for n in range(3, order + 1, 2):
-            coefficient_value = R1 / n
-            c.set(f'xc({n})', coefficient_value)
-            c.set(f'zs({n})', coefficient_value)
-
         c.set('x0', R0*np.cos(phi[ii]) )
         c.set('y0', R0*np.sin(phi[ii]) )
         c.set('z0', Z0)
         c.set('yaw', np.pi/2 - phi[ii])
         curves.append( c )
-
     return curves
 
-def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order,npol=None, ntor=None, numquadpoints=None, elliptical=False):
+def create_equally_spaced_windowpane_grid(nfp, stellsym, R0, a, R1, order, b=None,npol=None, ntor=None, numquadpoints=None, elliptical=False):
     if numquadpoints is None:
-        numquadpoints = 15 * order
-
-    # if ntor not specified, maximize at inboard midplane
-    if ntor is None: 
-        ntor = int(np.pi/nfp*(R0-a) / (2.2 * R1))
-
-    # if npol not specified, maximize on grid with constant spacing
-    if npol is None: 
-        npol = int(2*np.pi*a / (2.3 * R1))        
-
-    curves = []
-    from .orientedcurve import OrientedCurveRTPFourier
+        numquadpoints = 15 * order 
+    # if b not specified, assume vessel has circular cross section
+    if b is None:
+        b = a
+    # use this to evenly space coils on elliptical grid
+    def generate_even_arc_angles(a, b, ntheta):
+        from scipy.integrate import quad
+        from scipy.optimize import root_scalar
+        # Arc length differential integrand
+        def arc_length_diff(theta):
+            return np.sqrt((a * np.sin(theta))**2 + (b * np.cos(theta))**2)
+        # Total arc length of the ellipse
+        total_arc_length, _ = quad(arc_length_diff, 0, 2 * np.pi)
+        # Evenly spaced arc lengths (excluding overlap at 2π)
+        arc_lengths = np.linspace(0, total_arc_length, ntheta, endpoint=False)
+        # Function to compute the arc length from 0 to a given angle theta
+        def arc_length_to_theta(theta, s_target):
+            s, _ = quad(arc_length_diff, 0, theta)
+            return s - s_target
+        # Solve for theta corresponding to each arc length
+        thetas = np.zeros(ntheta)
+        for i, s in enumerate(arc_lengths):
+            if i == 0:
+                thetas[i] = 0
+            else:
+                result = root_scalar(arc_length_to_theta, args=(s,), bracket=[thetas[i-1], 2*np.pi])
+                thetas[i] = result.root
+        return thetas
 
     phi = np.linspace(0,np.pi/nfp,ntor,endpoint=False)
     dphi = np.pi/nfp * 1/ntor
     phi = phi + dphi/2
-    # do I need to add stellarator symmetry for theta as well? Is stellsym even used? (probably not, most likely won't need it but could add it)
-    theta = np.linspace(0, 2*np.pi, npol, endpoint=False)
-
-    # fill out the space better by making the saddles wider towards outboard
-    if elliptical==True:
-        Rtor = []
-        for th in theta:
-            Rtor.append(np.pi/nfp*(R0+a*np.cos(th))/(2.2*ntor))
+    if a==b:
+        theta = np.linspace(0, 2*np.pi, npol, endpoint=False)
     else:
-        Rtor = np.full(len(theta), R1)
+        theta = generate_even_arc_angles(a, b, npol)
                 
+    from .orientedcurve import OrientedCurveRTPFourier
+    curves = []
     for ii in range(ntor):
         for jj in range(npol):
+            theta_temp = np.pi/2 - theta[jj]
+            # see orientedcurve.py for where these come from/how they're used
+            r = a*b / np.sqrt((b*np.cos(theta_temp))**2 + (a*np.sin(theta_temp))**2)
+            x_int = r * np.cos(theta_temp) * (1 - b**2/a**2)
+            # this is to offset the 1/R compression in the toroidal width of the coil that occurs in the transformation
+            # not currently working perfectly (as in this is what I thought it would be but still leaves some slight variation, 
+            # so there's something else to consider), but appears to be good enough for now
+            # I think this works quite well for circular vessel's though, or at least I can't tell
+            scale = (R0 + x_int + np.sqrt((r*np.cos(theta_temp) - x_int)**2 + (r*np.sin(theta_temp))**2)) \
+                  / (R0 + x_int + np.sqrt((r*np.cos(theta_temp) - x_int)**2 + (r*np.sin(theta_temp))**2) * np.cos(theta_temp))
             c = OrientedCurveRTPFourier( numquadpoints, order )
-            c.set('yc(1)',Rtor[jj])
-            c.set('zs(1)',R1)
-
-            # Add higher-order odd harmonics to approximate a square dipole
-            for n in range(3, order + 1, 2):
-                coefficient_value = R1 / n
-                c.set(f'yc({n})', coefficient_value)
-                c.set(f'zs({n})', coefficient_value)
-
+            c.set('yc(1)',R1*scale) # toroidal direction
+            c.set('zs(1)',R1) # poloidal direction
             c.set('R0', R0)
             c.set('a', a)
-            #c.set('Z0', Z0) # not using this, can add later if needed
+            c.set('b', b)
             c.set('phi', phi[ii])
+            # look into this at some point - why do I do pi/2-theta here?
+            # theta = 0 corresponds to top of vessel, and goes opposite direction
             c.set('theta', np.pi/2 - theta[jj])
             curves.append( c )
     return curves
