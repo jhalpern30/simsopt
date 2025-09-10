@@ -21,3 +21,5 @@ I have been having difficulties getting simsopt to compile with the standard scr
 
 ## Notes
 As of today (9/10/25), this was a quick reorganization of adding my other repository containing these scripts into this branch, so a lot of the directory/file IO management in the scripts will need to be adjusted, but for now, this process should get the code running.
+
+This branch is not up to date with the simsopt master branch (since it is a bit of a mess of wireframe + coil force things that haven't been integrated). For now this should be fine to run, but once the coil forces from the above-mentioned PR are added to Simsopt, this can either be merged or it might be simpler to check out a new branch from master and either merge with or directly add in the dgammadtheta/phi calculations in `surfacerzfourier.py` and add in the curveplanarellipticalcylindrical class file (which definitely needs a better name).
