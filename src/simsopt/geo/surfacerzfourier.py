@@ -2130,3 +2130,52 @@ class SurfaceRZPseudospectral(Optimizable):
                                                        r_shift=self.r_shift,
                                                        a_scale=self.a_scale)
         return surf3
+    
+    def dgamma_dphi(self):
+        """
+        Return dgamma/dphi, where gamma is the position vector on the surface and
+        phi is the standard toroidal angle.
+        """
+        theta = self.quadpoints_theta*2*np.pi
+        phi = self.quadpoints_phi*2*np.pi
+        cosa = np.zeros((phi.size, theta.size, self.mpol+1, 2*self.ntor+1))
+        sina = np.zeros((phi.size, theta.size, self.mpol+1, 2*self.ntor+1))
+        for mm in range(0, self.mpol+1):
+            for nn in range(-self.ntor, self.ntor+1):
+                if mm==0 and nn<0:
+                    continue
+                cosa[:,:,mm,nn+self.ntor] = np.cos(mm*theta[None,:]-nn*self.nfp*phi[:,None])
+                sina[:,:,mm,nn+self.ntor] = np.sin(mm*theta[None,:]-nn*self.nfp*phi[:,None])
+        
+        R = np.einsum('mn,tpmn->tp', self.rc, cosa) + np.einsum('mn,tpmn->tp', self.rs, sina)
+        dRdphi = self.nfp*np.einsum('mn,n,tpmn->tp', self.rc, np.arange(-self.ntor,self.ntor+1), sina) - self.nfp*np.einsum('mn,n,tpmn->tp', self.rs, np.arange(-self.ntor,self.ntor+1), cosa)
+        dZdphi = self.nfp*np.einsum('mn,n,tpmn->tp', self.zc, np.arange(-self.ntor,self.ntor+1), sina) - self.nfp*np.einsum('mn,n,tpmn->tp', self.zs, np.arange(-self.ntor,self.ntor+1), cosa)
+
+        return np.stack([
+            dRdphi*np.cos(phi[:,None])-R*np.sin(phi[:,None]), 
+            dRdphi*np.sin(phi[:,None])+R*np.cos(phi[:,None]), 
+            dZdphi], axis=-1
+            )
+    
+    def dgammadtheta(self):
+        """
+        Return dgamma/dtheta, where gamma is the position vector on the surface and
+        theta is the poloidal angle.
+        """
+        theta = self.quadpoints_theta*2*np.pi
+        phi = self.quadpoints_phi*2*np.pi
+        cosa = np.zeros((phi.size, theta.size, self.mpol+1, 2*self.ntor+1))
+        sina = np.zeros((phi.size, theta.size, self.mpol+1, 2*self.ntor+1))
+        for mm in range(0, self.mpol+1):
+            for nn in range(-self.ntor, self.ntor+1):
+                if mm==0 and nn<0:
+                    continue
+                cosa[:,:,mm,nn+self.ntor] = np.cos(mm*theta[None,:]-nn*self.nfp*phi[:,None])
+                sina[:,:,mm,nn+self.ntor] = np.sin(mm*theta[None,:]-nn*self.nfp*phi[:,None])
+        
+        dRdtheta = -np.einsum('mn,m,tpmn->tp', self.rc, np.arange(0,self.mpol+1), sina) + np.einsum('mn,m,tpmn->tp', self.rs, np.arange(0,self.mpol+1), cosa)
+        dZdtheta = -np.einsum('mn,m,tpmn->tp', self.zc, np.arange(0,self.mpol+1), sina) + np.einsum('mn,m,tpmn->tp', self.zs, np.arange(0,self.mpol+1), cosa)
+
+        return np.stack([
+            dRdtheta*np.cos(phi[:,None]), dRdtheta*np.sin(phi[:,None]), dZdtheta], axis=-1
+            )
