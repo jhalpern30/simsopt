@@ -6,8 +6,8 @@ import matplotlib.colors as mcolors
 from simsopt.geo import CurvePlanarFourier, create_equally_spaced_curves, CurveCurveDistance, CurveSurfaceDistance
 from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current
 from simsopt.objectives import SquaredFlux
-from simsopt.field.force import coil_force, coil_torque
-from simsopt.field.selffield import regularization_circ
+#from simsopt.field.force import coil_force, coil_torque
+#from simsopt.field.selffield import regularization_circ
 from scipy.optimize import minimize
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
@@ -193,7 +193,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     # Interpolate unit normal and gamma vectors of winding surface at location of windowpane centers
     unitn_interpolators =        [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.unitnormal()[..., i], method='linear') for i in range(3)]
     gamma_interpolators =        [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.gamma()[..., i], method='linear') for i in range(3)]
-    dgammadtheta_interpolators = [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.dgammadtheta()[..., i], method='linear') for i in range(3)]
+    dgammadtheta_interpolators = [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.dgamma_dtheta()[..., i], method='linear') for i in range(3)]
     # Initialize curves
     base_wp_curves = []
     for ii in range(1, nwps_poloidal): # remove theta = 0 coil
@@ -211,7 +211,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
             unitn_interp =        np.stack([interp((phi_coil/(2*np.pi), theta_coil/(2*np.pi))) for interp in unitn_interpolators], axis=-1)
             gamma_interp =        np.stack([interp((phi_coil/(2*np.pi), theta_coil/(2*np.pi))) for interp in gamma_interpolators], axis=-1)
             dgammadtheta_interp = np.stack([interp((phi_coil/(2*np.pi), theta_coil/(2*np.pi))) for interp in dgammadtheta_interpolators], axis=-1)
-            curve = CurvePlanarFourier(numquadpoints, order, winding_surface.nfp, stellsym=True)
+            curve = CurvePlanarFourier(numquadpoints, order)
             # dofs stored as: [r0, higher order curve terms, q_0, q_i, q_j, q_k, x0, y0, z0]
             # Compute fourier coefficients for given super-ellipse
             coeffs = compute_fourier_coeffs(order, Rpol, Rtor, wp_n)
@@ -582,6 +582,7 @@ def plot_cross_section(surf, VV, output_dir, axisfontsize, legendfontsize, tickl
     plt.close()
     return
 
+"""
 def pointData_forces_torques(coils, a):
     # This is from Alan's branch to save forces/torques for Paraview
     contig = np.ascontiguousarray
@@ -598,3 +599,4 @@ def pointData_forces_torques(coils, a):
     point_data = {"Pointwise_Forces": (contig(forces[:, 0]), contig(forces[:, 1]), contig(forces[:, 2])),
                   "Pointwise_Torques": (contig(torques[:, 0]), contig(torques[:, 1]), contig(torques[:, 2]))}
     return point_data
+"""

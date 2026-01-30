@@ -1,13 +1,10 @@
 from simsopt.geo import curves_to_vtk, SurfaceRZFourier
 from simsopt.field import (
     Current,
-    ScaledCurrent,
     Coil,
     apply_symmetries_to_curves,
     apply_symmetries_to_currents,
 )
-from simsopt.field.force import coil_net_forces, coil_net_torques, coil_force
-from simsopt.field.selffield import regularization_circ
 from simsopt.objectives import SquaredFlux
 import numpy as np
 import os
@@ -89,7 +86,7 @@ def optimize(
         2.0 * np.pi * surf.get_rc(0, 0) * field_on_axis / mu0 / (2 * ntf * surf.nfp)
     )
     base_tf_coils = [
-        Coil(curve, ScaledCurrent(current, scale_factor))
+        Coil(curve, current)
         for curve, current in zip(base_tf_curves, base_tf_currents)
     ]
     tf_coils = coils_via_symmetries(
@@ -154,7 +151,7 @@ def optimize(
     nwptot = len(base_wp_curves * 2 * surf.nfp)
     wp_scale_factor = 1e2  # Initialize coils at 100kA (reasonable guess for 1T field)
     base_wp_coils = [
-        Coil(curve, ScaledCurrent(current, wp_scale_factor))
+        Coil(curve, current)
         for curve, current in zip(base_wp_curves, base_wp_currents)
     ]
 
@@ -218,6 +215,7 @@ def optimize(
     
     # Save various files
     VV.to_vtk(os.path.join(output_dir, "vacuum_vessel"))
+    """
     a = 0.05 # TF coil filament radius
     a_list = regularization_circ(a) * np.ones(len(tf_coils))
     # note: coil_force gives force per unit length, dF/dl - extract the max, min, and RMS for each coil
@@ -249,6 +247,7 @@ def optimize(
         NetForces=coil_net_forces(wp_coils, coils, a_list),
         NetTorques=coil_net_torques(wp_coils, coils, a_list)
     )
+    """
     bs.save(os.path.join(output_dir, "bs_opt.json"))
     # Save the BdotN on the full torus surface
     surf_full = SurfaceRZFourier.from_wout(
@@ -333,18 +332,18 @@ def optimize(
         "min_tf_current": np.min(np.abs(np.array(tf_currents))),
         "max_wp_current": np.max(np.abs(np.array(wp_currents))),
         "min_wp_current": np.min(np.abs(np.array(wp_currents))),
-        "tf_max_max_force":            max(float(f) for f in max_tf_forces),
-        "tf_min_min_force":            min(float(f) for f in min_tf_forces),
-        "tf_mean_RMS_force":            float(np.mean([f for f in RMS_tf_forces])),
-        "wp_max_max_force":            max(float(f) for f in max_wp_forces),
-        "wp_min_min_force":            min(float(f) for f in min_wp_forces),
-        "wp_mean_RMS_force":            float(np.mean([f for f in RMS_wp_forces])),
-        "tf_max_max_torque":            max(float(f) for f in max_tf_torques),
-        "tf_min_min_torque":            min(float(f) for f in min_tf_torques),
-        "tf_mean_RMS_torque":            float(np.mean([f for f in RMS_tf_torques])),
-        "wp_max_max_torque":            max(float(f) for f in max_wp_torques),
-        "wp_min_min_torque":            min(float(f) for f in min_wp_torques),
-        "wp_mean_RMS_torque":            float(np.mean([f for f in RMS_wp_torques])),
+        #"tf_max_max_force":            max(float(f) for f in max_tf_forces),
+        #tf_min_min_force":            min(float(f) for f in min_tf_forces),
+        #"tf_mean_RMS_force":            float(np.mean([f for f in RMS_tf_forces])),
+        #"wp_max_max_force":            max(float(f) for f in max_wp_forces),
+        #"wp_min_min_force":            min(float(f) for f in min_wp_forces),
+        #"wp_mean_RMS_force":            float(np.mean([f for f in RMS_wp_forces])),
+        #"tf_max_max_torque":            max(float(f) for f in max_tf_torques),
+        #"tf_min_min_torque":            min(float(f) for f in min_tf_torques),
+        #"tf_mean_RMS_torque":            float(np.mean([f for f in RMS_tf_torques])),
+        #"wp_max_max_torque":            max(float(f) for f in max_wp_torques),
+        #"wp_min_min_torque":            min(float(f) for f in min_wp_torques),
+        #"wp_mean_RMS_torque":            float(np.mean([f for f in RMS_wp_torques])),
         "final_squared_flux": Jf.J(),
         "avg_Bnormal": final_mean_abs_relBfinal_norm,
         "max_Bnormal": final_relBfinal_norm_max,
