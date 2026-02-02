@@ -1,17 +1,10 @@
-from simsopt.geo import curves_to_vtk, SurfaceRZFourier
-from simsopt.field import (
-    Current,
-    Coil,
-    apply_symmetries_to_curves,
-    apply_symmetries_to_currents,
-)
+from simsopt.geo import SurfaceRZFourier
+from simsopt.field import coils_to_vtk
 from simsopt.objectives import SquaredFlux
 import numpy as np
 import os
 import json
-import matplotlib.pyplot as plt
 from helper_functions import *
-
 
 def optimize(
     fil_distance,
@@ -52,62 +45,61 @@ def optimize(
     output_dir,
     verbose=False,
 ):
+    
+    # Create plot configuration
+    plot_config = PlotConfig(
+        dpi=dpi,
+        titlefontsize=titlefontsize,
+        axisfontsize=axisfontsize,
+        legendfontsize=legendfontsize,
+        ticklabelfontsize=ticklabelfontsize,
+        cbarfontsize=cbarfontsize
+    )
 
+    # ============================================================================
+    # Initialization
+    # ============================================================================
     # Create the plasma surface
     eq_name_full = os.path.join(eq_dir, eq_name + ".nc")
-    surf = SurfaceRZFourier.from_wout(
-        eq_name_full, s=surf_s, range="half period", nphi=plas_nPhi, ntheta=plas_nTheta
-    )
+    surf = SurfaceRZFourier.from_wout(eq_name_full, s=surf_s, range="half period", nphi=plas_nPhi, ntheta=plas_nTheta)
     surf.set_dofs(surf_dof_scale * surf.get_dofs())
+
     # Create a surface representing the vacuum vessel that dipoles will be placed on
     VV = SurfaceRZFourier(nfp=surf.nfp)
     VV.set_rc(0, 0, VV_R0)
     VV.set_rc(1, 0, VV_a)
     VV.set_zs(1, 0, VV_b)
-    plot_cross_section(
-        surf, VV, output_dir, axisfontsize, legendfontsize, ticklabelfontsize, dpi
-    )
+    plot_cross_section(surf, VV, output_dir, plot_config)
+
+    # Coil regularization radii (meters)
+    tf_coil_radius = 0.05  # TF coil filament radius
+    wp_coil_radius = 0.025  # WP coil filament radius, gives 5cm spacing in between coils
 
     # Initialize TF Coils
-    base_tf_curves, base_tf_currents = generate_tf_array(
+    # Compute I from toroidal solenoid approximation, I = B_T * 2 * pi * R0 / mu0 / (2 * nfp * ntf)
+    mu0 = 4.0 * np.pi * 1e-7
+    TF_current = 2.0 * np.pi * surf.get_rc(0, 0) * field_on_axis / mu0 / (2 * ntf * surf.nfp)
+    base_tf_curves, base_tf_coils = generate_tf_array(
         winding_surface=VV,
         ntf=ntf,
         TF_R0=TF_R0,
         TF_a=TF_a,
         TF_b=TF_b,
+        TF_current=TF_current,
         fixed_geo_tfs=fixed_geo_TFs,
         numquadpoints=numquadpoints,
+        tf_coil_radius=tf_coil_radius,
     )
-    # We define the currents with 1A, so that our dof is order unity. We
-    # then scale the current by a scale_factor
-    # from toroidal solenoid approximation, I = B_T * 2 * pi * R0 / mu0 / (2 * nfp * n_tf)
-    mu0 = 4.0 * np.pi * 1e-7
-    scale_factor = (
-        2.0 * np.pi * surf.get_rc(0, 0) * field_on_axis / mu0 / (2 * ntf * surf.nfp)
-    )
-    base_tf_coils = [
-        Coil(curve, current)
-        for curve, current in zip(base_tf_curves, base_tf_currents)
-    ]
+    tf_regularizations = [c.regularization for c in base_tf_coils] if hasattr(base_tf_coils[0], "regularization") else None
     tf_coils = coils_via_symmetries(
-    [c.curve for c in base_tf_coils], 
-    [c.current for c in base_tf_coils], 
-    surf.nfp, True
+        [c.curve for c in base_tf_coils],
+        [c.current for c in base_tf_coils],
+        surf.nfp,
+        True,
+        regularizations=tf_regularizations,
     )
     bs_tf = BiotSavart(tf_coils)
-    _, _, _ = (
-        plot_relBfinal_norm_modB(
-            bs_tf,
-            surf,
-            output_dir,
-            axisfontsize,
-            titlefontsize,
-            cbarfontsize,
-            ticklabelfontsize,
-            dpi,
-            "Pre TF Optimization",
-        )
-    )
+    plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Initial")
     if not fixed_geo_TFs:
         optimize_tfs(
             base_tf_coils=base_tf_coils,
@@ -122,40 +114,27 @@ def optimize(
             maxiter=MAXITER,
             verbose=verbose,
         )
-
-    _, _, _ = (
-        plot_relBfinal_norm_modB(
-            bs_tf,
-            surf,
-            output_dir,
-            axisfontsize,
-            titlefontsize,
-            cbarfontsize,
-            ticklabelfontsize,
-            dpi,
-            "Post TF Optimization",
-        )
-    )
+        plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Post TF Optimization")
         
     # Initialize dipoles
-    base_wp_curves, base_wp_currents = generate_windowpane_array(
+    wp_current_init = 1e2  # Initialize coils at 100kA (reasonable guess for 1T field)
+    base_wp_coils = generate_windowpane_array(
         winding_surface=VV,
         inboard_radius=dipole_radius,
         wp_fil_spacing=fil_distance,
         half_per_spacing=half_per_distance,
         wp_n=4,
+        wp_current=wp_current_init,
         numquadpoints=numquadpoints,
         order=12,
         verbose=verbose,
+        wp_coil_radius=wp_coil_radius,
     )
-    nwptot = len(base_wp_curves * 2 * surf.nfp)
-    wp_scale_factor = 1e2  # Initialize coils at 100kA (reasonable guess for 1T field)
-    base_wp_coils = [
-        Coil(curve, current)
-        for curve, current in zip(base_wp_curves, base_wp_currents)
-    ]
+    nwptot = len(base_wp_coils * 2 * surf.nfp)
 
-    # Optimize currents
+    # ============================================================================
+    # Optimization
+    # ============================================================================
     res, bs = optimize_windowpane_currents(
         base_wp_coils=base_wp_coils,
         base_tf_coils=base_tf_coils,
@@ -169,87 +148,47 @@ def optimize(
         verbose=verbose,
     )
 
+    # ============================================================================
     # Post-processing
-    # get final Bnormal
-    relBfinal_norm, final_mean_abs_relBfinal_norm, final_relBfinal_norm_max = (
-        plot_relBfinal_norm_modB(
-            bs,
-            surf,
-            output_dir,
-            axisfontsize,
-            titlefontsize,
-            cbarfontsize,
-            ticklabelfontsize,
-            dpi,
-            "Final",
-        )
-    )
+    # ============================================================================
+    # Final Bnormal
+    relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm = plot_relBfinal_norm_modB(bs, surf, output_dir, plot_config, "Final")
     Jf = SquaredFlux(surf, bs, definition=definition)
     # plots currents on surface
     wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(base_wp_coils, VV)
     plot_coil_currents_on_theta_phi_grid(
         wp_currents_phis_thetas,
         output_dir,
-        axisfontsize,
-        titlefontsize,
-        cbarfontsize,
-        ticklabelfontsize,
-        dpi,
+        plot_config,
     )
 
     # Prep coil data
-    tf_coils = coils_via_symmetries(
-        [c.curve for c in base_tf_coils], 
-        [c.current for c in base_tf_coils], 
-        surf.nfp, True
-    )
-    wp_coils = coils_via_symmetries(
-        [c.curve for c in base_wp_coils], 
-        [c.current for c in base_wp_coils], 
-        surf.nfp, True
-    )
-    coils = tf_coils + wp_coils
-
+    tf_regularizations = [c.regularization for c in base_tf_coils] if hasattr(base_tf_coils[0], "regularization") else None
+    wp_regularizations = [c.regularization for c in base_wp_coils] if hasattr(base_wp_coils[0], "regularization") else None
     tf_currents = [c.current.get_value() for c in tf_coils]
     wp_currents = [c.current.get_value() for c in wp_coils]
+    tf_coils = coils_via_symmetries(
+        [c.curve for c in base_tf_coils],
+        [c.current for c in base_tf_coils],
+        surf.nfp,
+        True,
+        regularizations=tf_regularizations,
+    )
+    wp_coils = coils_via_symmetries(
+        [c.curve for c in base_wp_coils],
+        [c.current for c in base_wp_coils],
+        surf.nfp,
+        True,
+        regularizations=wp_regularizations,
+    )
+    coils = tf_coils + wp_coils
     
     # Save various files
     VV.to_vtk(os.path.join(output_dir, "vacuum_vessel"))
-    """
-    a = 0.05 # TF coil filament radius
-    a_list = regularization_circ(a) * np.ones(len(tf_coils))
-    # note: coil_force gives force per unit length, dF/dl - extract the max, min, and RMS for each coil
-    max_tf_forces = [np.max(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)) for c in tf_coils]
-    min_tf_forces = [np.min(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)) for c in tf_coils]
-    RMS_tf_forces = [np.sqrt(np.mean(np.square(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)))) for c in tf_coils]
-    max_tf_torques = [np.max(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)) for c in tf_coils]
-    min_tf_torques = [np.min(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)) for c in tf_coils]
-    RMS_tf_torques = [np.sqrt(np.mean(np.square(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)))) for c in tf_coils]
-    curves_to_vtk(
-        curves = [c.curve for c in tf_coils], filename=os.path.join(output_dir, "tf_coils"), close=True,
-        I = tf_currents,
-        extra_point_data=pointData_forces_torques(tf_coils, a),
-        NetForces=coil_net_forces(tf_coils, coils, a_list),
-        NetTorques=coil_net_torques(tf_coils, coils, a_list)
-    )
-    a = 0.025 # WP coil filament radius, gives 5cm spacing in between coils
-    a_list = regularization_circ(a) * np.ones(len(wp_coils))
-    max_wp_forces = [np.max(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)) for c in wp_coils]
-    min_wp_forces = [np.min(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)) for c in wp_coils]
-    RMS_wp_forces = [np.sqrt(np.mean(np.square(np.linalg.norm(coil_force(c, coils, regularization_circ(a)), axis=1)))) for c in wp_coils]
-    max_wp_torques = [np.max(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)) for c in wp_coils]
-    min_wp_torques = [np.min(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)) for c in wp_coils]
-    RMS_wp_torques = [np.sqrt(np.mean(np.square(np.linalg.norm(coil_torque(c, coils, regularization_circ(a)), axis=1)))) for c in wp_coils]
-    curves_to_vtk(
-        curves = [c.curve for c in wp_coils], filename=os.path.join(output_dir, "wp_coils"), close=True,
-        I = wp_currents,
-        extra_point_data=pointData_forces_torques(wp_coils, a),
-        NetForces=coil_net_forces(wp_coils, coils, a_list),
-        NetTorques=coil_net_torques(wp_coils, coils, a_list)
-    )
-    """
+    # Need to include all coils together in output dump for force/torque calcs 
+    coils_to_vtk(coils, filename=os.path.join(output_dir, "coils"), close=True)
     bs.save(os.path.join(output_dir, "bs_opt.json"))
-    # Save the BdotN on the full torus surface
+    # BdotN on the full torus surface
     surf_full = SurfaceRZFourier.from_wout(
         eq_name_full,
         s=surf_s,
@@ -258,18 +197,55 @@ def optimize(
         ntheta=plas_nTheta,
     )
     bs.set_points(surf_full.gamma().reshape(-1, 3))
-    Bdotn = np.sum(
-        bs.B().reshape(surf_full.unitnormal().shape) * surf_full.unitnormal(), axis=2
-    )
+    Bdotn = np.sum(bs.B().reshape(surf_full.unitnormal().shape) * surf_full.unitnormal(), axis=2)
     modB = bs.AbsB().reshape((2 * surf.nfp * plas_nPhi, plas_nTheta))
     BdotN_norm = Bdotn / modB
-    surf_full.to_vtk(
-        os.path.join(output_dir, "surf_full"),
-        extra_data={"B_N": BdotN_norm[:, :, None]},
-    )
-    bs.set_points(
-        surf.gamma().reshape(-1, 3)
-    )  # have to set points back for Jf.J in results section
+    surf_full.to_vtk(os.path.join(output_dir, "surf_full"), extra_data={"B_N": BdotN_norm[:, :, None]})
+
+    # Set points back for Jf.J in results section
+    bs.set_points(surf.gamma().reshape(-1, 3))
+
+    # Compute forces and torques for TF and WP coils
+    # For each coil, compute force/torque from all coils, then extract statistics
+    max_tf_forces = []
+    min_tf_forces = []
+    mean_tf_forces = []
+    max_tf_torques = []
+    min_tf_torques = []
+    mean_tf_torques = []
+    
+    # This takes a while, so commenting out for now
+    # for c in tf_coils:
+    #     force_per_length = c.force(coils)  # Force per unit length (N/m)
+    #     torque_per_length = c.torque(coils)  # Torque per unit length (N)
+    #     force_mag = np.linalg.norm(force_per_length, axis=1)
+    #     torque_mag = np.linalg.norm(torque_per_length, axis=1)
+    #     max_tf_forces.append(np.max(force_mag))
+    #     min_tf_forces.append(np.min(force_mag))
+    #     mean_tf_forces.append(np.mean(force_mag))
+    #     max_tf_torques.append(np.max(torque_mag))
+    #     min_tf_torques.append(np.min(torque_mag))
+    #     mean_tf_torques.append(np.mean(torque_mag))
+    
+    max_wp_forces = []
+    min_wp_forces = []
+    mean_wp_forces = []
+    max_wp_torques = []
+    min_wp_torques = []
+    mean_wp_torques = []
+    
+    # This takes a while, so commenting out for now
+    # for c in wp_coils:
+    #     force_per_length = c.force(coils)
+    #     torque_per_length = c.torque(coils)
+    #     force_mag = np.linalg.norm(force_per_length, axis=1)
+    #     torque_mag = np.linalg.norm(torque_per_length, axis=1)
+    #     max_wp_forces.append(np.max(force_mag))
+    #     min_wp_forces.append(np.min(force_mag))
+    #     mean_wp_forces.append(np.mean(force_mag))
+    #     max_wp_torques.append(np.max(torque_mag))
+    #     min_wp_torques.append(np.min(torque_mag))
+    #     mean_wp_torques.append(np.mean(torque_mag))
 
     # Extract TF optimized geometric dofs
     if not fixed_geo_TFs:
@@ -318,11 +294,11 @@ def optimize(
         "surf_minor_radius": surf.minor_radius(),
         "surf_aspect_ratio": surf.aspect_ratio(),
         "surf_volume": surf.volume(),
-        "initial_tf_current": scale_factor,
-        "initial_wp_current": wp_scale_factor,
+        "initial_tf_current": TF_current,
+        "initial_wp_current": wp_current_init,
         "num_wps": nwptot,
         "ntoroidal": int((np.pi/surf.nfp*(VV_R0 - VV_a) - half_per_distance + fil_distance) / (2 * dipole_radius + fil_distance)),
-        "npoloidal": int(len(base_wp_curves) / int((np.pi/surf.nfp*(VV_R0 - VV_a) - half_per_distance + fil_distance) / (2 * dipole_radius + fil_distance))),
+        "npoloidal": int(len(base_wp_coils) / int((np.pi/surf.nfp*(VV_R0 - VV_a) - half_per_distance + fil_distance) / (2 * dipole_radius + fil_distance))),
         # optimization results
         "message":                  res.message,
         "success":                  res.success,
@@ -332,21 +308,21 @@ def optimize(
         "min_tf_current": np.min(np.abs(np.array(tf_currents))),
         "max_wp_current": np.max(np.abs(np.array(wp_currents))),
         "min_wp_current": np.min(np.abs(np.array(wp_currents))),
-        #"tf_max_max_force":            max(float(f) for f in max_tf_forces),
-        #tf_min_min_force":            min(float(f) for f in min_tf_forces),
-        #"tf_mean_RMS_force":            float(np.mean([f for f in RMS_tf_forces])),
-        #"wp_max_max_force":            max(float(f) for f in max_wp_forces),
-        #"wp_min_min_force":            min(float(f) for f in min_wp_forces),
-        #"wp_mean_RMS_force":            float(np.mean([f for f in RMS_wp_forces])),
-        #"tf_max_max_torque":            max(float(f) for f in max_tf_torques),
-        #"tf_min_min_torque":            min(float(f) for f in min_tf_torques),
-        #"tf_mean_RMS_torque":            float(np.mean([f for f in RMS_tf_torques])),
-        #"wp_max_max_torque":            max(float(f) for f in max_wp_torques),
-        #"wp_min_min_torque":            min(float(f) for f in min_wp_torques),
-        #"wp_mean_RMS_torque":            float(np.mean([f for f in RMS_wp_torques])),
+        # "tf_max_max_force": max(float(f) for f in max_tf_forces),
+        # "tf_min_min_force": min(float(f) for f in min_tf_forces),
+        # "tf_mean_mean_force": float(np.mean([f for f in mean_tf_forces])),
+        # "wp_max_max_force": max(float(f) for f in max_wp_forces),
+        # "wp_min_min_force": min(float(f) for f in min_wp_forces),
+        # "wp_mean_mean_force": float(np.mean([f for f in mean_wp_forces])),
+        # "tf_max_max_torque": max(float(f) for f in max_tf_torques),
+        # "tf_min_min_torque": min(float(f) for f in min_tf_torques),
+        # "tf_mean_mean_torque": float(np.mean([f for f in mean_tf_torques])),
+        # "wp_max_max_torque": max(float(f) for f in max_wp_torques),
+        # "wp_min_min_torque": min(float(f) for f in min_wp_torques),
+        # "wp_mean_mean_torque": float(np.mean([f for f in mean_wp_torques])),
         "final_squared_flux": Jf.J(),
-        "avg_Bnormal": final_mean_abs_relBfinal_norm,
-        "max_Bnormal": final_relBfinal_norm_max,
+        "avg_Bnormal": mean_abs_relBfinal_norm,
+        "max_Bnormal": max_relBfinal_norm,
         "peak_wp_field": np.max(np.abs(np.array(wp_currents))) * mu0 / 2 / dipole_radius,
         "MA_meters": get_total_amp_meters(base_tf_coils, base_wp_coils, VV) / 1e6,
         "maxR0": np.max(R0s) if R0s is not None else None,

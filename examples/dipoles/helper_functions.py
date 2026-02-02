@@ -1,13 +1,11 @@
 # this script has the bulk of functions necessary for the optimize.py script
-
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.colors as mcolors
+from dataclasses import dataclass
 from simsopt.geo import CurvePlanarFourier, create_equally_spaced_curves, CurveCurveDistance, CurveSurfaceDistance
-from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current
+from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current, CircularRegularizedCoil
 from simsopt.objectives import SquaredFlux
-#from simsopt.field.force import coil_force, coil_torque
-#from simsopt.field.selffield import regularization_circ
 from scipy.optimize import minimize
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
@@ -15,6 +13,16 @@ import scipy.integrate as spi
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import ellipe
 import os
+
+@dataclass
+class PlotConfig:
+    """Configuration container for plot formatting parameters."""
+    dpi: int = 100
+    titlefontsize: int = 18
+    axisfontsize: int = 16
+    legendfontsize: int = 14
+    ticklabelfontsize: int = 14
+    cbarfontsize: int = 18
 
 # These four functions are used to compute the rotation quaternion for the coil
 def quaternion_from_axis_angle(axis, theta):
@@ -104,7 +112,7 @@ def compute_fourier_coeffs(max_order, a, b, n):
         coeffs['b_m'].append(b_m(m, a, b, n))
     return coeffs
 
-# use this to evenly space coils on elliptical grid
+# use this to evenly space coils on elliptical vacuum vessel
 # since evenly spaced in poloidal angle won't work
 # must use quadrature for elliptic integral
 def generate_even_arc_angles(a, b, ntheta):
@@ -124,7 +132,7 @@ def generate_even_arc_angles(a, b, ntheta):
             thetas[i] = result.root
     return thetas
 
-def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, fixed_geo_tfs=False, numquadpoints=32):
+def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed_geo_tfs=False, numquadpoints=32, tf_coil_radius=None):
     """
     Initialize an array of planar toroidal field coils over a half field period
     Parameters:
@@ -133,29 +141,50 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, fixed_geo_tfs=Fal
         TF_R0: major radius of the TF coils
         TF_a: minor radius of the TF coils (in R direction)
         TF_b: minor radius of the TF coils (in Z direction)
+        TF_current: current in each TF coil
         fixed_geo_tfs: whether to fix the geometric degrees of freedom of the TF coils
         numquadpoints: number of quadrature points representing each coil
+        tf_coil_radius: if set, initialize coils as CircularRegularizedCoil with this radius
     Returns:
         base_tf_curves: list of initialized curves (half field period)
-        base_tf_currents: list of initialized currents (half field period)
+        base_tf_coils: list of initialized coils (half field period)
     """  
     if not fixed_geo_tfs:
         try:
             from simsopt.geo import create_equally_spaced_cylindrical_curves
-            base_tf_curves = create_equally_spaced_cylindrical_curves(ntf, winding_surface.nfp, stellsym=winding_surface.stellsym, R0=TF_R0, a=TF_a, b=TF_b, numquadpoints=numquadpoints)
+            base_tf_curves = create_equally_spaced_cylindrical_curves(
+                ntf,
+                winding_surface.nfp,
+                stellsym=winding_surface.stellsym,
+                R0=TF_R0,
+                a=TF_a,
+                b=TF_b,
+                numquadpoints=numquadpoints,
+            )
         except ImportError:
             raise ImportError("Need to be on the windowpane branch with the correct TF curve class to unfix TF geometry")
     else:
         # order=1 is fine for elliptical
-        base_tf_curves = create_equally_spaced_curves(ncurves=ntf, nfp=winding_surface.nfp, stellsym=winding_surface.stellsym, R0=TF_R0, R1=TF_a, order=1, numquadpoints=numquadpoints)
-        # add this for elliptical TF coils - keep same ellipticity as VV
+        base_tf_curves = create_equally_spaced_curves(
+            ncurves=ntf,
+            nfp=winding_surface.nfp,
+            stellsym=winding_surface.stellsym,
+            R0=TF_R0,
+            R1=TF_a,
+            order=1,
+            numquadpoints=numquadpoints,
+        )
+        # TF_b set to be same ellipticity as VV, i.e. TF_b/TF_a = VV_b/VV_a
         for c in base_tf_curves:
             c.set("zs(1)", -TF_b) # see create_equally_spaced_curves doc for minus sign info
+    # Now make the curves into coils
+    if tf_coil_radius is None:
+        base_tf_coils = [Coil(curve, Current(TF_current)) for curve in base_tf_curves]
+    else:
+        base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
+    return base_tf_curves, base_tf_coils
 
-    base_tf_currents = [Current(1) for c in base_tf_curves]
-    return base_tf_curves, base_tf_currents
-
-def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False):
+def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, wp_current, numquadpoints=32, order=12, verbose=False, wp_coil_radius=None):
     """
     Initialize an array of nwps_poloidal x nwps_toroidal planar windowpane coils on a winding surface
     Coils are initialized with a current of 1, that can then be scaled using ScaledCurrent
@@ -166,12 +195,13 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
         wp_fil_spacing: spacing wp filaments
         half_per_spacing: spacing between half period segments
         wp_n: value of n for superellipse, see https://en.wikipedia.org/wiki/Superellipse
+        wp_current: current in each dipole coil
         numquadpoints: number of points representing each coil (see CurvePlanarFourier documentation)
         order: number of Fourier moments for the planar coil representation, 0 = circle 
                (see CurvePlanarFourier documentation), more for ellipse approximation
+        wp_coil_radius: if set, initialize coils as CircularRegularizedCoil with this radius
     Returns:
-        base_wp_curves: list of initialized curves (half field period)
-        base_wp_currents: list of initialized currents (half field period)
+        base_wp_coils: list of initialized coils (half field period)
     """    
     # Identify locations of windowpanes
     VV_a = winding_surface.get_rc(1,0)
@@ -196,7 +226,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     dgammadtheta_interpolators = [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.dgamma_dtheta()[..., i], method='linear') for i in range(3)]
     # Initialize curves
     base_wp_curves = []
-    for ii in range(1, nwps_poloidal): # remove theta = 0 coil
+    for ii in range(1, nwps_poloidal): # remove theta = 0 coil (ii = 0)
         for jj in range(nwps_toroidal):
             theta_coil = theta_locs[ii]
             r = VV_a*VV_b / np.sqrt((VV_b*np.cos(theta_coil))**2 + (VV_a*np.sin(theta_coil))**2)
@@ -212,28 +242,30 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
             gamma_interp =        np.stack([interp((phi_coil/(2*np.pi), theta_coil/(2*np.pi))) for interp in gamma_interpolators], axis=-1)
             dgammadtheta_interp = np.stack([interp((phi_coil/(2*np.pi), theta_coil/(2*np.pi))) for interp in dgammadtheta_interpolators], axis=-1)
             curve = CurvePlanarFourier(numquadpoints, order)
-            # dofs stored as: [r0, higher order curve terms, q_0, q_i, q_j, q_k, x0, y0, z0]
-            # Compute fourier coefficients for given super-ellipse
+            # Compute Fourier coefficients for given super-ellipse
             coeffs = compute_fourier_coeffs(order, Rpol, Rtor, wp_n)
-            for m in range(order+1):
-                curve.set(f'x{m}', coeffs['a_m'][m])
-                if m!=0:
-                    curve.set(f'x{m+order+1}', coeffs['b_m'][m])
+            for m in range(order + 1):
+                curve.set(f"rc({m})", coeffs['a_m'][m])
+            for m in range(1, order + 1):
+                curve.set(f"rs({m})", coeffs['b_m'][m])
             # Align the coil normal with the surface normal and Rpol axis with dgamma/dtheta
             # Renormalize the vector because interpolation can slightly modify its norm
-            quaternion = compute_quaternion(unitn_interp/np.linalg.norm(unitn_interp), dgammadtheta_interp/np.linalg.norm(dgammadtheta_interp))
-            curve.set(f'x{curve.dof_size-7}', quaternion[0])
-            curve.set(f'x{curve.dof_size-6}', quaternion[1])
-            curve.set(f'x{curve.dof_size-5}', quaternion[2])
-            curve.set(f'x{curve.dof_size-4}', quaternion[3])
+            quaternion = compute_quaternion(unitn_interp / np.linalg.norm(unitn_interp), dgammadtheta_interp / np.linalg.norm(dgammadtheta_interp))
+            curve.set("q0", quaternion[0])
+            curve.set("qi", quaternion[1])
+            curve.set("qj", quaternion[2])
+            curve.set("qk", quaternion[3])
             # Align the coil center with the winding surface gamma
-            curve.set(f"x{curve.dof_size-3}", gamma_interp[0])
-            curve.set(f"x{curve.dof_size-2}", gamma_interp[1])
-            curve.set(f"x{curve.dof_size-1}", gamma_interp[2])
+            curve.set("X", gamma_interp[0])
+            curve.set("Y", gamma_interp[1])
+            curve.set("Z", gamma_interp[2])
             base_wp_curves.append(curve)
     # Now make the curves into coils
-    base_wp_currents = [Current(1) for c in base_wp_curves]
-    return base_wp_curves, base_wp_currents
+    if wp_coil_radius is None:
+        base_wp_coils = [Coil(curve, Current(wp_current)) for curve in base_wp_curves]
+    else:
+        base_wp_coils = [CircularRegularizedCoil(curve, Current(wp_current), wp_coil_radius) for curve in base_wp_curves]
+    return base_wp_coils
 
 def optimize_tfs(base_tf_coils, surf_plasma, winding_surface, CC_THRESHOLD, CC_WEIGHT, CS_THRESHOLD, CS_WEIGHT, num_fixed, definition='local', maxiter=1000, verbose=False):
     """
@@ -294,7 +326,7 @@ def classify_current(item, threshold):
     # Extract the number after 'Current' and before ':'
     current_num = int(item.split(':')[0].replace('Current', ''))
     return 0 if current_num < threshold else 1
-# defines derivative of current penalty objective
+# Derivative of current penalty objective = 2*(|J| - J_threshold) * sign(J) for |J| > J_threshold, else 0
 def derivativeJcp(current, CURRENT_THRESHOLD):
     diff = np.abs(current) - CURRENT_THRESHOLD
     mask = diff > 0
@@ -331,9 +363,13 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         c.curve.fix_all()
         c.current.unfix_all()
     if precomputed:
-        # precomputed cannot deal with TF geometric degrees of freedom
+        # This is basically a smart way of doing the optimization that accounts for
+        # the linear scaling of B with current, and thus BdotN with current.
+        # Same result as exact, but much faster since we only have to compute BdotN once per coil 
+        # CANNOT handle TF geometric degrees of freedom
         for c in base_tf_coils:
             c.curve.fix_all()
+
         # I have to do this because the dofs are out of order and sorted like current18, current19, 2, 20... 29, 3, 30 etc., 
         # and I want them like 1, 2, 3 etc., this should allow me to index them correctly (don't name dofs or else this will get messed up)
         # shoutout chatGPT for this section
@@ -355,8 +391,9 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         BdotNcoil = np.zeros((ndofs, surf_plasma_nphi, surf_plasma_ntheta))
         BdotNcoil_fixed = np.zeros((num_fixed, surf_plasma_nphi, surf_plasma_ntheta))
         # these two are only used if local or normalized
-        Bcoil = np.zeros((ndofs, surf_plasma_nphi, surf_plasma_ntheta, 3))
-        Bcoil_fixed = np.zeros((num_fixed, surf_plasma_nphi, surf_plasma_ntheta, 3))
+        if definition!='quadratic flux':
+            Bcoil = np.zeros((ndofs, surf_plasma_nphi, surf_plasma_ntheta, 3))
+            Bcoil_fixed = np.zeros((num_fixed, surf_plasma_nphi, surf_plasma_ntheta, 3))
         # now we will apply symmetries to the coils one at a time and calculate their respective BdotN contribution
         coils = []
         # need to add the fixed coils to the BdotN calc even though it isn't a dof
@@ -423,7 +460,6 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         res = minimize(fun, dofs, jac=True, method='L-BFGS-B', options={'maxiter': maxiter, 'maxcor': 300}, tol=1e-10)
         if verbose: print(res.message)
         Jf.x = res.x
-
     else:
         coils = coils_via_symmetries([c.curve for c in base_tf_coils + base_wp_coils], [c.current for c in base_tf_coils + base_wp_coils], surf_plasma.nfp, surf_plasma.stellsym)
         bs = BiotSavart(coils)
@@ -445,16 +481,26 @@ def coil_currents_on_theta_phi_grid(base_wp_coils, winding_surface):
     currents_phis_thetas = np.zeros((len(base_wp_coils), 3))
     for i, wp in enumerate(base_wp_coils):
         wp.curve.unfix_all()
-        x0 = wp.curve.get(f"x{wp.curve.dof_size-3}")
-        y0 = wp.curve.get(f"x{wp.curve.dof_size-2}")
-        z0 = wp.curve.get(f"x{wp.curve.dof_size-1}")
+        x0 = wp.curve.get("X")
+        y0 = wp.curve.get("Y")
+        z0 = wp.curve.get("Z")
         currents_phis_thetas[i, 0] = wp.current.get_value()
         currents_phis_thetas[i, 1] = np.arctan2(y0, x0) # phi
         currents_phis_thetas[i, 2] = np.arctan2(z0, (np.sqrt(x0**2 + y0**2) - R0)) # theta
     return currents_phis_thetas  
 
 def get_total_amp_meters(base_tf_coils, base_wp_coils, winding_surface):
-    # estimates the total amps*meters for the coils to give an estimate of HTS length
+    """
+    Estiamte total amp-meters of the coils for HTS length estimation.
+    For the dipole coils, finds the maximum current at constant theta and assumes
+    that current applies to all coils at that theta.
+    Parameters:
+    base_tf_coils: list of TF coil objects for a half field period.
+    base_wp_coils: list of windowpane coil objects for a half field period.
+    winding_surface: surface that windowpane coils are placed on.
+    Returns:
+        total_amp_meters: estimated total amp-meters of the coils.
+    """
     total = 0
     theta_tol = 0.01
     # TFs are easy, just add current * arc length 
@@ -484,11 +530,15 @@ def get_total_amp_meters(base_tf_coils, base_wp_coils, winding_surface):
         total += ntor * base_wp_coils[max_index].current.get_value() * np.sum(np.linalg.norm(np.diff(base_wp_coils[max_index].curve.gamma(), axis=0), axis=1))
     return total * 2 * winding_surface.nfp
 
-def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, axisfontsize, titlefontsize, cbarfontsize, ticklabelfontsize, dpi):
+def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, plot_config):
     """
     Plots the current of each coil on a 2D grid with theta on the y-axis and phi on the x-axis.
+    Note that the size of the dipoles are arbitrarily set and not physical in the plot. This is
+    merely a visualization of the coil currents on the winding surface.
     Parameters:
     wp_currents_phis_thetas (ndarray): A (num_coils, 3) array where each row represents (current, phi, theta).
+    output_dir (str): Directory to save the plot.
+    plot_config (PlotConfig): Plot formatting configuration.
     """
     currents = wp_currents_phis_thetas[:, 0] / 1000
     phis = wp_currents_phis_thetas[:, 1]
@@ -501,20 +551,32 @@ def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, ax
     scatter = ax.scatter(phis/(2*np.pi), thetas/(2*np.pi), edgecolors=colors, facecolors='none', s=200, linewidths=1.5)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, ax=ax)
-    cbar.ax.set_ylabel("WP Currents [kA]", fontsize=cbarfontsize, fontweight='bold')
-    cbar.ax.tick_params(axis='y', which='major', labelsize=ticklabelfontsize)
-    ax.set_xlabel(r'$\phi/2\pi$', fontsize=axisfontsize, fontweight='bold')
-    ax.set_ylabel(r'$\theta/2\pi$', fontsize=axisfontsize, fontweight='bold')
+    cbar.ax.set_ylabel("WP Currents [kA]", fontsize=plot_config.cbarfontsize, fontweight='bold')
+    cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
+    ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
+    ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylim(-0.1, 1.1)
-    ax.set_title("WP Coil Currents on Winding Surface", fontsize=titlefontsize, fontweight='bold')
+    ax.set_title("WP Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'wp_coil_currents.png'), dpi=dpi)
+    plt.savefig(os.path.join(output_dir, 'wp_coil_currents.png'), dpi=plot_config.dpi)
     plt.close()
     return
 
-def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, axisfontsize, titlefontsize, cbarfontsize, ticklabelfontsize, dpi, label):
-    # creates Bnormal and modB plots for Biot-Savart object on plasma surface
+def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
+    """
+    Creates Bnormal and modB plots for Biot-Savart object on plasma surface.
+    
+    Parameters:
+        bs: BiotSavart object
+        surf_plas: Plasma surface
+        output_dir (str): Directory to save plots
+        plot_config (PlotConfig): Plot formatting configuration
+        label (str): Label for the plot title and filename
+    
+    Returns:
+        tuple: (relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm)
+    """
     theta = surf_plas.quadpoints_theta
     phi = surf_plas.quadpoints_phi
     n = surf_plas.normal()
@@ -533,33 +595,41 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, axisfontsize, titlefonts
     max_rBnorm = np.max(np.abs(relBfinal_norm))
     fig, ax = plt.subplots()
     contour = ax.contourf(phi, theta, np.squeeze(relBfinal_norm).T, levels=50, cmap='coolwarm', vmin=-max_rBnorm, vmax=max_rBnorm)
-    ax.set_xlabel(r'$\phi/2\pi$', fontsize=axisfontsize, fontweight='bold')
-    ax.set_ylabel(r'$\theta/2\pi$', fontsize=axisfontsize, fontweight='bold')
+    ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
+    ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     cbar = fig.colorbar(contour, ax=ax)
-    cbar.ax.set_ylabel(r'$\mathbf{B}\cdot\mathbf{n}/|\mathbf{B}|$', fontsize=cbarfontsize, fontweight='bold')
-    cbar.ax.tick_params(axis='y', which='major', labelsize=ticklabelfontsize)
-    ax.set_title(f'{label} Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=titlefontsize, fontweight='bold')
+    cbar.ax.set_ylabel(r'$\mathbf{B}\cdot\mathbf{n}/|\mathbf{B}|$', fontsize=plot_config.cbarfontsize, fontweight='bold')
+    cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
+    ax.set_title(f'{label} Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=plot_config.titlefontsize, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'relBn_{label.replace(" ", "")}.png'), dpi=dpi)
+    plt.savefig(os.path.join(output_dir, f'relBn_{label.replace(" ", "")}.png'), dpi=plot_config.dpi)
     plt.close()
     # ModB
     abs_modBfinal_dA = np.abs(modBfinal.reshape((-1, 1))) * surf_area
     mean_abs_modBfinal = np.sum(abs_modBfinal_dA) / np.sum(surf_area)
     fig, ax = plt.subplots()
     contour = ax.contour(phi, theta, np.squeeze(modBfinal).T, levels=25, cmap='viridis')
-    ax.set_xlabel(r'$\phi/2\pi$', fontsize=axisfontsize, fontweight='bold')
-    ax.set_ylabel(r'$\theta/2\pi$', fontsize=axisfontsize, fontweight='bold')
+    ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
+    ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     cbar = fig.colorbar(contour, ax=ax)
-    cbar.ax.set_ylabel(r'$|\mathbf{B}|$', fontsize=cbarfontsize, fontweight='bold')
-    cbar.ax.tick_params(axis='y', which='major', labelsize=ticklabelfontsize)
-    ax.set_title(f'Surface-averaged |B| = {mean_abs_modBfinal:.3f}', fontsize=titlefontsize, fontweight='bold')
+    cbar.ax.set_ylabel(r'$|\mathbf{B}|$', fontsize=plot_config.cbarfontsize, fontweight='bold')
+    cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
+    ax.set_title(f'Surface-averaged |B| = {mean_abs_modBfinal:.3f}', fontsize=plot_config.titlefontsize, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'modB_{label.replace(" ", "")}.png'), dpi=dpi)
+    plt.savefig(os.path.join(output_dir, f'modB_{label.replace(" ", "")}.png'), dpi=plot_config.dpi)
     plt.close()
     return relBfinal_norm, mean_abs_relBfinal_norm, np.max(relBfinal_norm)
 
-def plot_cross_section(surf, VV, output_dir, axisfontsize, legendfontsize, ticklabelfontsize, dpi):
-    # plots cross section of plasma and vacuum vessel at a few toroidal locations
+def plot_cross_section(surf, VV, output_dir, plot_config):
+    """
+    Plots cross section of plasma and vacuum vessel at a few toroidal locations.
+    
+    Parameters:
+        surf: Plasma surface
+        VV: Vacuum vessel surface
+        output_dir (str): Directory to save plot
+        plot_config (PlotConfig): Plot formatting configuration
+    """
     plt.figure(figsize=(7,6))
     phi_array = np.linspace(0, 0.5 / surf.nfp, 6, endpoint=True) # scaled from 0 to 1
     for phi_slice in phi_array:
@@ -572,31 +642,12 @@ def plot_cross_section(surf, VV, output_dir, axisfontsize, legendfontsize, tickl
         plt.plot(rs, zs, label=fr'$\phi$ = {phi_slice*2:.2f}π')
         plt.plot(rs2, zs2, 'k')
         plt.plot(np.mean(rs), np.mean(zs), 'kx')
-    plt.xlabel('R [m]', fontsize=axisfontsize, fontweight='bold')
-    plt.ylabel('Z [m]', fontsize=axisfontsize, fontweight='bold')
-    plt.legend(loc='upper right', bbox_to_anchor=(1.5, 1), fontsize=legendfontsize)
-    plt.tick_params(axis='both', which='major', labelsize=ticklabelfontsize)
+    plt.xlabel('R [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
+    plt.ylabel('Z [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
+    plt.legend(loc='upper right', bbox_to_anchor=(1.5, 1), fontsize=plot_config.legendfontsize)
+    plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'x_section.png'), dpi=dpi, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, 'x_section.png'), dpi=plot_config.dpi, bbox_inches='tight')
     plt.close()
     return
-
-"""
-def pointData_forces_torques(coils, a):
-    # This is from Alan's branch to save forces/torques for Paraview
-    contig = np.ascontiguousarray
-    forces = np.zeros((len(coils), len(coils[0].curve.gamma()) + 1, 3))
-    torques = np.zeros((len(coils), len(coils[0].curve.gamma()) + 1, 3))
-    for i, c in enumerate(coils):
-        forces[i, :-1, :] = coil_force(c, coils, regularization_circ(a))
-        torques[i, :-1, :] = coil_torque(c, coils, regularization_circ(a))
-
-    forces[:, -1, :] = forces[:, 0, :]
-    torques[:, -1, :] = torques[:, 0, :]
-    forces = forces.reshape(-1, 3)
-    torques = torques.reshape(-1, 3)
-    point_data = {"Pointwise_Forces": (contig(forces[:, 0]), contig(forces[:, 1]), contig(forces[:, 2])),
-                  "Pointwise_Torques": (contig(torques[:, 0]), contig(torques[:, 1]), contig(torques[:, 2]))}
-    return point_data
-"""
