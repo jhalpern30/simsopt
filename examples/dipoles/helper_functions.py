@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.colors as mcolors
 from dataclasses import dataclass
 from simsopt.geo import CurvePlanarFourier, create_equally_spaced_curves, CurveCurveDistance, CurveSurfaceDistance
-from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current, CircularRegularizedCoil
+from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current, ScaledCurrent, CircularRegularizedCoil
 from simsopt.objectives import SquaredFlux
 from scipy.optimize import minimize
 from scipy.integrate import quad
@@ -179,9 +179,9 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed
             c.set("zs(1)", -TF_b) # see create_equally_spaced_curves doc for minus sign info
     # Now make the curves into coils
     if tf_coil_radius is None:
-        base_tf_coils = [Coil(curve, Current(TF_current)) for curve in base_tf_curves]
+        base_tf_coils = [Coil(curve, ScaledCurrent(Current(1), TF_current)) for curve in base_tf_curves]
     else:
-        base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
+        base_tf_coils = [CircularRegularizedCoil(curve, ScaledCurrent(Current(1), TF_current), tf_coil_radius) for curve in base_tf_curves]
     return base_tf_curves, base_tf_coils
 
 def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, wp_current, numquadpoints=32, order=12, verbose=False, wp_coil_radius=None):
@@ -262,9 +262,9 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
             base_wp_curves.append(curve)
     # Now make the curves into coils
     if wp_coil_radius is None:
-        base_wp_coils = [Coil(curve, Current(wp_current)) for curve in base_wp_curves]
+        base_wp_coils = [Coil(curve, ScaledCurrent(Current(1), wp_current)) for curve in base_wp_curves]
     else:
-        base_wp_coils = [CircularRegularizedCoil(curve, Current(wp_current), wp_coil_radius) for curve in base_wp_curves]
+        base_wp_coils = [CircularRegularizedCoil(curve, ScaledCurrent(Current(1), wp_current), wp_coil_radius) for curve in base_wp_curves]
     return base_wp_coils
 
 def optimize_tfs(base_tf_coils, surf_plasma, winding_surface, CC_THRESHOLD, CC_WEIGHT, CS_THRESHOLD, CS_WEIGHT, num_fixed, definition='local', maxiter=1000, verbose=False):

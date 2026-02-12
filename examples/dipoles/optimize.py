@@ -165,8 +165,6 @@ def optimize(
     # Prep coil data
     tf_regularizations = [c.regularization for c in base_tf_coils] if hasattr(base_tf_coils[0], "regularization") else None
     wp_regularizations = [c.regularization for c in base_wp_coils] if hasattr(base_wp_coils[0], "regularization") else None
-    tf_currents = [c.current.get_value() for c in tf_coils]
-    wp_currents = [c.current.get_value() for c in wp_coils]
     tf_coils = coils_via_symmetries(
         [c.curve for c in base_tf_coils],
         [c.current for c in base_tf_coils],
@@ -182,6 +180,8 @@ def optimize(
         regularizations=wp_regularizations,
     )
     coils = tf_coils + wp_coils
+    tf_currents = [c.current.get_value() for c in tf_coils]
+    wp_currents = [c.current.get_value() for c in wp_coils]
     
     # Save various files
     VV.to_vtk(os.path.join(output_dir, "vacuum_vessel"))
@@ -207,12 +207,12 @@ def optimize(
 
     # Compute forces and torques for TF and WP coils
     # For each coil, compute force/torque from all coils, then extract statistics
-    max_tf_forces = []
-    min_tf_forces = []
-    mean_tf_forces = []
-    max_tf_torques = []
-    min_tf_torques = []
-    mean_tf_torques = []
+    # max_tf_forces = []
+    # min_tf_forces = []
+    # mean_tf_forces = []
+    # max_tf_torques = []
+    # min_tf_torques = []
+    # mean_tf_torques = []
     
     # This takes a while, so commenting out for now
     # for c in tf_coils:
@@ -227,12 +227,12 @@ def optimize(
     #     min_tf_torques.append(np.min(torque_mag))
     #     mean_tf_torques.append(np.mean(torque_mag))
     
-    max_wp_forces = []
-    min_wp_forces = []
-    mean_wp_forces = []
-    max_wp_torques = []
-    min_wp_torques = []
-    mean_wp_torques = []
+    # max_wp_forces = []
+    # min_wp_forces = []
+    # mean_wp_forces = []
+    # max_wp_torques = []
+    # min_wp_torques = []
+    # mean_wp_torques = []
     
     # This takes a while, so commenting out for now
     # for c in wp_coils:
