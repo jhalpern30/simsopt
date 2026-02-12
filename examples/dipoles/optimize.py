@@ -69,11 +69,12 @@ def optimize(
     VV.set_rc(0, 0, VV_R0)
     VV.set_rc(1, 0, VV_a)
     VV.set_zs(1, 0, VV_b)
-    plot_cross_section(surf, VV, output_dir, plot_config)
+    plot_cross_section(surf, VV, output_dir, "x_section", plot_config)
 
     # Coil regularization radii (meters)
-    tf_coil_radius = 0.05  # TF coil filament radius
-    wp_coil_radius = 0.025  # WP coil filament radius, gives 5cm spacing in between coils
+    # Uncommenting these will make the coils_to_vtk call take a while, so leaving as 0 for now
+    tf_coil_radius = 0 #0.05  # TF coil filament radius
+    wp_coil_radius = 0 #0.025  # WP coil filament radius, gives 5cm spacing in between coils
 
     # Initialize TF Coils
     # Compute I from toroidal solenoid approximation, I = B_T * 2 * pi * R0 / mu0 / (2 * nfp * ntf)
@@ -183,11 +184,7 @@ def optimize(
     
     # Save various files
     VV.to_vtk(os.path.join(output_dir, "vacuum_vessel"))
-    # Need to include all coils together in output dump for force/torque calcs
-    # THIS TAKES A WHILE! But uncomment if you want the vtk output
-    # TODO: make this a flag of whether to do the short curves_to_vtk with current output or
-    # the full coils_to_vtk output with forces and torques, which is more expensive
-    # coils_to_vtk(coils, filename=os.path.join(output_dir, "coils"), close=True)
+    coils_to_vtk(coils, filename=os.path.join(output_dir, "coils"), close=True)
     bs.save(os.path.join(output_dir, "bs_opt.json"))
     # BdotN on the full torus surface
     surf_full = SurfaceRZFourier.from_wout(

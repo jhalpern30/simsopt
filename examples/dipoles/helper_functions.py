@@ -260,6 +260,11 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
             curve.set("Y", gamma_interp[1])
             curve.set("Z", gamma_interp[2])
             base_wp_curves.append(curve)
+
+    # Make sure the dofs are all fixed for the curves
+    for curve in base_wp_curves:
+        curve.fix_all()
+
     # Now make the curves into coils
     # We must initialize the curves with 1A current because of the way we scale the BdotN in the precomputed
     # section of optimize_windowpane_currents - I did not notice any dependence on the intial windowpane current
@@ -626,7 +631,7 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
     plt.close()
     return relBfinal_norm, mean_abs_relBfinal_norm, np.max(relBfinal_norm)
 
-def plot_cross_section(surf, VV, output_dir, plot_config):
+def plot_cross_section(surf, VV, output_dir, figname, plot_config):
     """
     Plots cross section of plasma and vacuum vessel at a few toroidal locations.
     
@@ -634,6 +639,7 @@ def plot_cross_section(surf, VV, output_dir, plot_config):
         surf: Plasma surface
         VV: Vacuum vessel surface
         output_dir (str): Directory to save plot
+        figname (str): Filename for the saved plot
         plot_config (PlotConfig): Plot formatting configuration
     """
     plt.figure(figsize=(7,6))
@@ -654,6 +660,6 @@ def plot_cross_section(surf, VV, output_dir, plot_config):
     plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'x_section.png'), dpi=plot_config.dpi, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, figname + '.png'), dpi=plot_config.dpi, bbox_inches='tight')
     plt.close()
     return
