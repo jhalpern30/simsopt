@@ -117,14 +117,12 @@ def optimize(
         plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Post TF Optimization")
         
     # Initialize dipoles
-    wp_current_init = 1e2  # Initialize coils at 100kA (reasonable guess for 1T field)
     base_wp_coils = generate_windowpane_array(
         winding_surface=VV,
         inboard_radius=dipole_radius,
         wp_fil_spacing=fil_distance,
         half_per_spacing=half_per_distance,
         wp_n=4,
-        wp_current=wp_current_init,
         numquadpoints=numquadpoints,
         order=12,
         verbose=verbose,
@@ -185,8 +183,11 @@ def optimize(
     
     # Save various files
     VV.to_vtk(os.path.join(output_dir, "vacuum_vessel"))
-    # Need to include all coils together in output dump for force/torque calcs 
-    coils_to_vtk(coils, filename=os.path.join(output_dir, "coils"), close=True)
+    # Need to include all coils together in output dump for force/torque calcs
+    # THIS TAKES A WHILE! But uncomment if you want the vtk output
+    # TODO: make this a flag of whether to do the short curves_to_vtk with current output or
+    # the full coils_to_vtk output with forces and torques, which is more expensive
+    # coils_to_vtk(coils, filename=os.path.join(output_dir, "coils"), close=True)
     bs.save(os.path.join(output_dir, "bs_opt.json"))
     # BdotN on the full torus surface
     surf_full = SurfaceRZFourier.from_wout(

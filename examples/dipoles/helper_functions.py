@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.colors as mcolors
 from dataclasses import dataclass
 from simsopt.geo import CurvePlanarFourier, create_equally_spaced_curves, CurveCurveDistance, CurveSurfaceDistance
-from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current, ScaledCurrent, CircularRegularizedCoil
+from simsopt.field import apply_symmetries_to_curves, apply_symmetries_to_currents, coils_via_symmetries, BiotSavart, Coil, Current, CircularRegularizedCoil
 from simsopt.objectives import SquaredFlux
 from scipy.optimize import minimize
 from scipy.integrate import quad
@@ -177,17 +177,18 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed
         # TF_b set to be same ellipticity as VV, i.e. TF_b/TF_a = VV_b/VV_a
         for c in base_tf_curves:
             c.set("zs(1)", -TF_b) # see create_equally_spaced_curves doc for minus sign info
+            c.fix_all()
     # Now make the curves into coils
     if tf_coil_radius is None:
-        base_tf_coils = [Coil(curve, ScaledCurrent(Current(1), TF_current)) for curve in base_tf_curves]
+        base_tf_coils = [Coil(curve, Current(TF_current)) for curve in base_tf_curves]
     else:
-        base_tf_coils = [CircularRegularizedCoil(curve, ScaledCurrent(Current(1), TF_current), tf_coil_radius) for curve in base_tf_curves]
+        base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
     return base_tf_curves, base_tf_coils
 
-def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, wp_current, numquadpoints=32, order=12, verbose=False, wp_coil_radius=None):
+def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False, wp_coil_radius=None):
     """
     Initialize an array of nwps_poloidal x nwps_toroidal planar windowpane coils on a winding surface
-    Coils are initialized with a current of 1, that can then be scaled using ScaledCurrent
+    Coils are initialized with a current of 1 in order to simplify the logic in the precomputed section
     Parameters:
         winding_surface: surface upon which to place the coils, with coil plane locally tangent to the surface normal
                          assumed to be an elliptical cross section
@@ -195,7 +196,6 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
         wp_fil_spacing: spacing wp filaments
         half_per_spacing: spacing between half period segments
         wp_n: value of n for superellipse, see https://en.wikipedia.org/wiki/Superellipse
-        wp_current: current in each dipole coil
         numquadpoints: number of points representing each coil (see CurvePlanarFourier documentation)
         order: number of Fourier moments for the planar coil representation, 0 = circle 
                (see CurvePlanarFourier documentation), more for ellipse approximation
@@ -261,10 +261,13 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
             curve.set("Z", gamma_interp[2])
             base_wp_curves.append(curve)
     # Now make the curves into coils
+    # We must initialize the curves with 1A current because of the way we scale the BdotN in the precomputed
+    # section of optimize_windowpane_currents - I did not notice any dependence on the intial windowpane current
+    # but if we need to add variability here later we'll need to update the optimization or just use precomputed = false
     if wp_coil_radius is None:
-        base_wp_coils = [Coil(curve, ScaledCurrent(Current(1), wp_current)) for curve in base_wp_curves]
+        base_wp_coils = [Coil(curve, Current(1)) for curve in base_wp_curves]
     else:
-        base_wp_coils = [CircularRegularizedCoil(curve, ScaledCurrent(Current(1), wp_current), wp_coil_radius) for curve in base_wp_curves]
+        base_wp_coils = [CircularRegularizedCoil(curve, Current(1), wp_coil_radius) for curve in base_wp_curves]
     return base_wp_coils
 
 def optimize_tfs(base_tf_coils, surf_plasma, winding_surface, CC_THRESHOLD, CC_WEIGHT, CS_THRESHOLD, CS_WEIGHT, num_fixed, definition='local', maxiter=1000, verbose=False):
@@ -351,6 +354,7 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
     Returns:
         bs: optimized BiotSavart object
     """
+    nprint = 5 # print J every nprint steps
     if definition!='local' and definition!='normalized' and definition!='quadratic flux':
         raise ValueError('definition must either be "local", "normalized", or "quadratic flux"')
     base_coils = base_tf_coils + base_wp_coils
@@ -362,6 +366,7 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
     for c in base_wp_coils:
         c.curve.fix_all()
         c.current.unfix_all()
+    
     if precomputed:
         # This is basically a smart way of doing the optimization that accounts for
         # the linear scaling of B with current, and thus BdotN with current.
@@ -427,7 +432,6 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
 
         # use this to only set dJ for dipole current dofs
         dJscale = [classify_current(dof_name, len(base_tf_coils)+1) for dof_name in Jf.dof_names]
-        nprint = 5 # hardcode for now, print J every nprint steps
         def fun(dofs, info={'Nfeval':0}):
             info['Nfeval'] += 1
             n_norm = np.linalg.norm(surf_plasma.normal(), axis=2)
@@ -457,7 +461,7 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             if verbose and np.mod(info['Nfeval'], nprint) == 0: print(outstr)
             return J, grad
         # optimize currents and update in the coils
-        res = minimize(fun, dofs, jac=True, method='L-BFGS-B', options={'maxiter': maxiter, 'maxcor': 300}, tol=1e-10)
+        res = minimize(fun, dofs, jac=True, method='L-BFGS-B', options={'maxiter': maxiter, 'maxcor': 300}, tol=1e-20)
         if verbose: print(res.message)
         Jf.x = res.x
     else:
@@ -466,13 +470,15 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         Jf = SquaredFlux(surf_plasma, bs, definition=definition)
         dofs = Jf.x
         def fun(dofs, info={'Nfeval':0}):
+            info['Nfeval'] += 1
             Jf.x = dofs
             J = Jf.J()
             grad = Jf.dJ()
             outstr = f"Iteration {info['Nfeval']}: J={J:.4e}, |dJ|={np.linalg.norm(grad):.4e}"
-            if verbose and np.mod(info['Nfeval'], nprint): print(outstr)
+            if verbose and np.mod(info['Nfeval'], 1) == 0: print(outstr)
             return J, grad
-        res = minimize(fun, dofs, jac=True, method='L-BFGS-B', options={'maxiter': maxiter, 'maxcor': 300}, tol=1e-8)
+        res = minimize(fun, dofs, jac=True, method='L-BFGS-B', options={'maxiter': maxiter, 'maxcor': 300}, tol=1e-20)
+        if verbose: print(res.message)
     return res, bs
 
 def coil_currents_on_theta_phi_grid(base_wp_coils, winding_surface):
