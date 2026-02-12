@@ -359,7 +359,9 @@ def callback(x):
 # ==============================================================================
 mpol = 5
 ntor = 5
-STAGE2_DIR = "/Users/jakehalpern/Github/simsopt_fork/simsopt/examples/outputs/20260212_test/wout_nfp22ginsburg_000_001242/02_ntf4_diprad_0.045_VVa_0.26917896678169706_VV_R0_1.00217995400675_ellipticalVV"
+STAGE2_DIR = "../outputs/20260212_test/wout_nfp22ginsburg_000_001242/02_ntf4_diprad_0.045_VVa_0.26917896678169706_VV_R0_1.00217995400675_ellipticalVV"
+
+# This is created by and contains the results from stage 2, which we use to initialize single stage
 results = load(os.path.join(STAGE2_DIR, 'results.json'))
 
 # Optimization targets and weights
@@ -405,7 +407,7 @@ print("Starting equilibrium = ", eq_name)
 print(f"Target volume: {vol_target}")
 
 # Extract coil information
-num_tf_coils = results["ntf"] * 2 * results["surf_nfp"]  # ntf is the number of TF coils per half-period
+num_tf_coils = results["ntf"] * 2 * results["surf_nfp"]  # ntf is the number of TF coils per half-period, so this is the total number
 coils = bs.coils
 curves = [c.curve for c in coils]
 tf_coils = coils[:num_tf_coils]
@@ -414,7 +416,7 @@ dipole_coils = coils[num_tf_coils:]
 dipole_curves = [c.curve for c in dipole_coils]
 dipole_curve = dipole_curves[0]
 
-# Just make sure
+# Just triple make sure they're fixed
 for c in dipole_curves:
     c.fix_all()
 
@@ -511,7 +513,7 @@ res = minimize(fun, dofs, jac=True, method='L-BFGS-B', callback=callback, option
 print(res.message)
 
 # ==============================================================================
-# SAVE OPTIMIZED STATE
+# SAVE OPTIMIZED STATE AND PERFORM POSTPROCESSING
 # ==============================================================================
 # Save optimized coil configurations
 coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_opt", close=True)
@@ -534,5 +536,12 @@ print(f"Iota: {Iotas(boozer_surface).J()}")
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotOptimized")
 plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "CrossSectionOptimized", plot_config)
 
-# Save run_dict for post-analysis
-save(run_dict, os.path.join(OUT_DIR_ITER, "run_dict.json"))
+# plots currents on surface
+wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(dipole_coils[1:len(dipole_coils)//surf.nfp//2], VV)
+plot_coil_currents_on_theta_phi_grid(
+    wp_currents_phis_thetas,
+    OUT_DIR_ITER,
+    plot_config,
+)
+
+# TODO: add some kind of outputs dump like stage 2 for reproducibility + ease of results access
