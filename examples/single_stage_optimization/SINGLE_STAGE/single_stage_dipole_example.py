@@ -1,20 +1,20 @@
 import os
 import io
+import sys
 import numpy as np
-from shapely.geometry import Polygon
 from scipy.optimize import minimize
 
 # SIMSOPT imports
 from simsopt._core.optimizable import Optimizable
-from simsopt.geo import SurfaceRZFourier, SurfaceXYZTensorFourier, BoozerSurface, curves_to_vtk, CurveLength, LpCurveCurvature
-from simsopt.geo.surfaceobjectives import Volume, BoozerResidual, Iotas, NonQuasiSymmetricRatio, SurfaceSurfaceDistance
-from simsopt.geo.curveobjectives import CurveCurveDistance, CurveSurfaceDistance
+from simsopt.geo import SurfaceRZFourier, SurfaceXYZTensorFourier, BoozerSurface, curves_to_vtk
+from simsopt.geo.surfaceobjectives import Volume, BoozerResidual, Iotas, NonQuasiSymmetricRatio
 from simsopt.field import BiotSavart, Coil, Current
-from simsopt.objectives import QuadraticPenalty, SquaredFlux
+from simsopt.objectives import QuadraticPenalty
 from simsopt._core.optimizable import load, save
-from simsopt.field.coil import ScaledCurrent
 import matplotlib.pyplot as plt
 from simsopt._core.derivative import derivative_dec
+module_dir = os.path.abspath("/Users/jakehalpern/Github/simsopt_fork/simsopt/examples/dipoles/helper_functions.py")
+sys.path.append(module_dir)
 
 class BoozerResidualExact(Optimizable):
     r"""
@@ -145,11 +145,13 @@ def initialize_boozer_surface(surf_prev, mpol, ntor, bs, vol_target, constraint_
     G0: Value of net current going through the torus hole
     """
     surf = SurfaceXYZTensorFourier(
-          mpol=mpol,ntor=ntor,nfp=5,stellsym=True,
+          mpol=mpol,ntor=ntor,nfp=surf_prev.nfp,stellsym=True,
           quadpoints_theta=surf_prev.quadpoints_theta,
           quadpoints_phi=surf_prev.quadpoints_phi
           )
     surf.least_squares_fit(surf_prev.gamma())
+    # surf.plot()
+    # plt.show()
 
     if constraint_weight:
         # Boozer least square approach
@@ -160,7 +162,7 @@ def initialize_boozer_surface(surf_prev, mpol, ntor, bs, vol_target, constraint_
         # Boozer exact approach
         print("Generating Boozer exact surface...")
         surf_exact = SurfaceXYZTensorFourier(
-              mpol=mpol,ntor=ntor,nfp=5,stellsym=True,
+              mpol=mpol,ntor=ntor,nfp=surf.nfp,stellsym=True,
               quadpoints_theta=np.linspace(0,1,2*mpol+1,endpoint=False),
               quadpoints_phi=np.linspace(0,1./surf.nfp,2*mpol+1,endpoint=False),
               dofs=surf.dofs
@@ -200,7 +202,7 @@ def normPlot(surf, bs, filename):
     abs_relBfinal_norm_dA = np.abs(relBfinal_norm.reshape((-1, 1))) * surf_area
     mean_abs_relBfinal_norm = np.sum(abs_relBfinal_norm_dA) / np.sum(surf_area)
     max_rnorm = np.max(np.abs(relBfinal_norm))
-    relBfinal_norm = np.sum(bs.B().reshape((nphi, ntheta, 3)) * surf.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((nphi, ntheta, 3))**2, axis=2))[:, :, None]
+    relBfinal_norm = np.sum(bs.B().reshape((len(phi), len(theta), 3)) * surf.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((len(phi), len(theta), 3))**2, axis=2))[:, :, None]
     fig, ax = plt.subplots()
     contour = ax.contourf(phi, theta, np.squeeze(relBfinal_norm).T, levels=50, cmap='seismic', vmin=-max_rnorm, vmax=max_rnorm)
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=18, fontweight='bold')
@@ -211,40 +213,6 @@ def normPlot(surf, bs, filename):
     ax.set_title(f'Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=18, fontweight='bold')
     plt.savefig(f"{filename}.png")
     plt.close()
-
-def crossSectionPlot(surf_coils, surf, banana_curve, filename):
-    # plots cross section of plasma at a few toroidal locations and relevant HBT cross sections
-    plt.figure(figsize=(7,6))
-    cs2 = surf_coils.cross_section(0)
-    rs2 = np.sqrt(cs2[:,0]**2 + cs2[:,1]**2); rs2 = np.append(rs2, rs2[0])
-    zs2 = cs2[:,2]; zs2 = np.append(zs2, zs2[0])    
-    plt.plot(rs2, zs2, label='Banana Surface')
-    cs3 = hbt.cross_section(0)
-    rs3 = np.sqrt(cs3[:,0]**2 + cs3[:,1]**2); rs3 = np.append(rs3, rs3[0])
-    zs3 = cs3[:,2]; zs3 = np.append(zs3, zs3[0])
-    hbt_poly = Polygon(zip(rs3, zs3))
-    plt.plot(rs3, zs3, label='HBT LCFS')
-    cs_vv = VV.cross_section(0)
-    rs_vv = np.sqrt(cs_vv[:, 0]**2 + cs_vv[:, 1]**2); zs_vv = cs_vv[:, 2]
-    rs_vv = np.append(rs_vv, rs_vv[0]); zs_vv = np.append(zs_vv, zs_vv[0])
-    plt.plot(rs_vv, zs_vv, label='Vacuum Vessel')
-    phi_array = np.linspace(0, 2*np.pi / surf_coils.nfp * 4/5, 5)
-    for phi_slice in phi_array:
-        cs = surf.cross_section(phi_slice * 2 * np.pi)
-        rs = np.sqrt(cs[:,0]**2 + cs[:,1]**2); rs = np.append(rs, rs[0])
-        zs = cs[:,2]; zs = np.append(zs, zs[0])
-        plt.plot(rs, zs, label=f'Φ={phi_slice/np.pi:0.2f}π')
-    plt.xlabel('R [m]', fontsize=18, fontweight='bold')
-    plt.ylabel('Z [m]', fontsize=18, fontweight='bold')
-    plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1), fontsize=16)
-    plt.tick_params(axis='both', which='major', labelsize=14)
-    plt.gca().set_aspect('equal', adjustable='box')
-    plt.minorticks_on()
-    plt.grid(True)
-    plt.savefig(f"{filename}.png")
-    plt.close()
-    return True
-
 
 def fun(x):
     """
@@ -342,28 +310,13 @@ def callback(x):
     dJ_Boozer = np.linalg.norm(JBoozerResidual.dJ())
     J_iota = Jiota.J()
     dJ_iota = np.linalg.norm(Jiota.dJ())
-    J_len = JCurveLength.J()
-    dJ_len = np.linalg.norm(JCurveLength.dJ())
-    J_cc = JCurveCurve.J()
-    dJ_cc = np.linalg.norm(JCurveCurve.dJ())
-    J_cs = JCurveSurface.J()
-    dJ_cs = np.linalg.norm(JCurveSurface.dJ())
-    J_surf = JSurfSurf.J()
-    dJ_surf = np.linalg.norm(JSurfSurf.dJ())
-    J_curvature = JCurvature.J()
-    dJ_curvature = np.linalg.norm(JCurvature.dJ())
 
     iota_str = f"{iota.J():.4f}"
-    volume_str = f"{boozer_surface.surface.volume:.4f}"
+    volume_str = f"{boozer_surface.surface.volume():.4f}"
 
-    max_r = np.max(np.sqrt(banana_curve.gamma()[:,1]**2 + banana_curve.gamma()[:,2]**2))
-    max_z = np.max(np.abs(banana_curve.gamma()[:,0]))
-    length = curvelength.J()
-    curvecurve_min = JCurveCurve.shortest_distance()
-    curvesurf_min = JCurveSurface.shortest_distance()
-
+    nphi = boozer_surface.surface.nphi
+    ntheta = boozer_surface.surface.ntheta
     BdotN = np.mean(np.abs(np.sum(bs.B().reshape((nphi, ntheta, 3)) * boozer_surface.surface.unitnormal(), axis=2)))
-    intersecting = boozer_surface.surface.is_self_intersecting()
 
     width = 35
     buffer = io.StringIO()
@@ -376,17 +329,7 @@ def callback(x):
     print(f"{'ι Penalty':{width}} = {J_iota:.6e} (dJ = {dJ_iota:.6e})", file=buffer)
     print(f"{'Iotas (actual)':{width}} = {iota_str}", file=buffer)
     print(f"{'Volume':{width}} = {volume_str}", file=buffer)
-    print(f"{'Curve Length Penalty':{width}} = {J_len:.6e} (dJ = {dJ_len:.6e})", file=buffer)
-    print(f"{'Curve-Curve Penalty':{width}} = {J_cc:.6e} (min={curvecurve_min:.3e}) (dJ = {dJ_cc:.6e})", file=buffer)
-    print(f"{'Curve-Surface Penalty':{width}} = {J_cs:.6e} (min={curvesurf_min:.3e}) (dJ = {dJ_cs:.6e})", file=buffer)
-    print(f"{'Surf-Vessel Penalty':{width}} = {J_surf:.6e} (dJ = {dJ_surf:.6e})", file=buffer) 
-    print(f"{'Curvature Penalty':{width}} = {J_curvature:.6e} (dJ = {dJ_curvature:.6e})", file=buffer) 
     print(f"{'⟨|B·n|⟩':{width}} = {BdotN:.6e}", file=buffer)
-
-    print(f"{'Intersecting':{width}} = {intersecting}", file=buffer)
-    print(f"{'Max Curve R':{width}} = {max_r:.6e}", file=buffer)
-    print(f"{'Max Curve Z':{width}} = {max_z:.6e}", file=buffer)
-    print(f"{'Curve Length':{width}} = {length:.6e}", file=buffer)
     print("="*70, file=buffer)
 
     output_str = buffer.getvalue()
@@ -405,26 +348,23 @@ def callback(x):
 # ==============================================================================
 # CONFIGURATION PARAMETERS
 # ==============================================================================
-banana_surf_radius = 0.215
-banana_surf_nfp = 5
-nphi = 255
-ntheta = 64
-mpol = 8
-ntor = 6
+mpol = 5
+ntor = 5
+STAGE2_DIR = "/Users/jakehalpern/Github/simsopt_fork/simsopt/examples/outputs/20260212_test/wout_nfp22ginsburg_000_001242/01_ntf4_diprad_0.045_VVa_0.26917896678169706_VV_R0_1.00217995400675_ellipticalVV"
+results = load(os.path.join(STAGE2_DIR, 'results.json'))
 
 # Optimization targets and weights
 vol_target = 0.10
 CONSTRAINT_WEIGHT = 1.0
 MAXITER = 300
-iota_target = 0.15
-num_tf_coils = 20
+iota_target = 0.10
 
 # Convergence tolerances for different mpol values
-ftol_by_mpol = {8: 1e-5, 9: 5e-6, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
-gtol_by_mpol = {8: 1e-2, 9: 5e-3, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
+ftol_by_mpol = {5: 1e-3, 8: 1e-5, 9: 5e-6, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
+gtol_by_mpol = {5: 1e-3, 8: 1e-2, 9: 5e-3, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
 
 # Output directory setup
-OUT_DIR = f"./outputs"
+OUT_DIR = f"./single_stage_outputs"
 os.makedirs(OUT_DIR, exist_ok=True)
 boozer_type = {'initial': 'least_squares', 'final': 'exact'}  # example
 stage = 'initial'  # or 'final', depending on what you want
@@ -432,48 +372,42 @@ stage = 'initial'  # or 'final', depending on what you want
 # ==============================================================================
 # SURFACE GEOMETRY DEFINITIONS
 # ==============================================================================
-# The outer vacuum vessel of HBT, R0 = 0.976, a = 0.222
 # Solely for visualization purposes
-VV = SurfaceRZFourier(nfp=5, stellsym=True)
-VV.set_rc(0, 0, 0.976)
-VV.set_rc(1, 0, 0.222)
-VV.set_zs(1, 0, 0.222)
-
-# The proposed new HBT LCFS
-hbt = SurfaceRZFourier(nfp=5, stellsym=True)
-hbt.set_rc(0, 0, 0.9115)    # R0 of LCFS semi-circle center
-hbt.set_rc(1, 0, 0.1605)    # Minor radius (thick metal walls)
-hbt.set_zs(1, 0, 0.152)    # Z extent = ±0.152 m (flat top/bottom)
-
-# The surface the coils can lie on from Jeff - R0 = 0.976 and a=0.22
-surf_coils = SurfaceRZFourier(nfp=banana_surf_nfp, stellsym=True)
-surf_coils.set_rc(0, 0, 0.976)
-surf_coils.set_rc(1, 0, banana_surf_radius)
-surf_coils.set_zs(1, 0, banana_surf_radius)
+VV = SurfaceRZFourier(nfp=results["surf_nfp"])
+VV.set_rc(0, 0, results["VV_R0"])
+VV.set_rc(1, 0, results["VV_a"])
+VV.set_zs(1, 0, results["VV_b"])
 
 # ==============================================================================
 # LOAD EQUILIBRIUM AND COILS
 # ==============================================================================
-plasma_surf_filename = 'wout_nfp22ginsburg_000_014417_iota15.nc'
-file_loc = f'../equilibria/{plasma_surf_filename}'
-bs = load(f'../STAGE_2/outputs-{plasma_surf_filename}/R0=0.925-s=0.24-LW=0.0005-CCW=100-CW=0.0001-SR=0.215-Order=2/biot_savart_opt.json')
+bs = load(os.path.join(STAGE2_DIR, 'bs_opt.json'))
 
-# Initialize the boundary magnetic surface and scale it to the target major radius
-surf = SurfaceRZFourier.from_wout(file_loc, range="half period", nphi=255, ntheta=64, s=0.24)
-# scale the surface down to the target appropriate major radius
-surf.set_dofs(surf.get_dofs()*0.925/surf.major_radius())
-
+# Initialize the boundary magnetic surface and scale it to the same as stage 2
+eq_name_full = os.path.join(results["eq_dir"], results["eq_name"] + ".nc")
+surf = SurfaceRZFourier.from_wout(
+    eq_name_full, s=results["surf_s"], range="half period", nphi=results["plas_nPhi"], ntheta=results["plas_nTheta"]
+)
+surf.set_dofs(results["surf_dof_scale"] * surf.get_dofs())
 # Extract coil information
+num_tf_coils = results["ntf"] * 2 * results["surf_nfp"]  # ntf is the number of TF coils per half-period
 coils = bs.coils
 curves = [c.curve for c in coils]
 tf_coils = coils[:num_tf_coils]
 tf_curves = [c.curve for c in tf_coils]
-banana_coils = coils[num_tf_coils:]
-banana_curves = [c.curve for c in banana_coils]
-banana_curve = banana_curves[0]
-current_sum = sum(abs(c.current.get_value()) for c in tf_coils)
+dipole_coils = coils[num_tf_coils:]
+dipole_curves = [c.curve for c in dipole_coils]
+dipole_curve = dipole_curves[0]
 
-# Calculate G0 parameter from TF coil currents
+n_tf = len(tf_coils)
+n_dip = len(dipole_coils)
+n_total = len(coils)
+
+print(f"TF coils: {n_tf}")
+print(f"Dipole coils: {n_dip}")
+print(f"Total coils: {n_total}")
+
+current_sum = sum(abs(c.current.get_value()) for c in tf_coils)
 G0 = 2. * np.pi * current_sum * (4 * np.pi * 10**(-7) / (2 * np.pi))
 
 # ==============================================================================
@@ -483,6 +417,7 @@ print(f"\n===== Starting single stage optimization for mpol = {mpol} =====")
 
 OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}"
 os.makedirs(OUT_DIR_ITER, exist_ok=True)
+# TODO: plot_cross_section(surf, VV, OUT_DIR_ITER, plot_config)
 
 # Initialize Boozer surface with target parameters
 boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, vol_target, CONSTRAINT_WEIGHT, iota_target, G0)
@@ -495,15 +430,16 @@ curves_to_vtk(curves, OUT_DIR_ITER + f"/curves_init", close=True)
 bs.save(OUT_DIR_ITER + f"/biot_savart_init.json")
 
 # Save initial surface with magnetic field normal component data
-pointData = {"B_N/B": np.sum(bs.B().reshape((nphi, ntheta, 3)) *
-    boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((nphi, ntheta, 3))**2, axis=2))[:, :, None]}
+pointData = {"B_N/B": np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3)) *
+    boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3))**2, axis=2))[:, :, None]}
 boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_init", extra_data=pointData)
 boozer_surface.surface.save(OUT_DIR_ITER + f"/surf_init.json")
 print(f"Volume: {boozer_surface.surface.volume()}")
 
 # Generate initial diagnostic plots
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotInitial")
-crossSectionPlot(surf_coils, boozer_surface.surface, banana_curve, OUT_DIR_ITER + "/CrossSectionInitial")
+# TODO: use the built-in dipole method
+# crossSectionPlot(surf_coils, boozer_surface.surface, banana_curve, OUT_DIR_ITER + "/CrossSectionInitial")
 
 # ==============================================================================
 # DEFINE OBJECTIVE FUNCTION COMPONENTS
@@ -519,38 +455,18 @@ else:
     brs = [BoozerResidual(boozer_surface, bs_obj)]
 
 # Objective function weights and parameters
-LENGTH_WEIGHT = 1
 RES_WEIGHT = 1e3
 IOTAS_WEIGHT = 1e2
-CC_WEIGHT = 1e2
-CC_DIST = 0.05
-CS_WEIGHT = 1
-CS_DIST = 0.02
-SURF_DIST_WEIGHT = 1e3
-SS_DIST = 0.04
-CURVATURE_WEIGHT = 1e-1
-CURVATURE_THRESHOLD = 20
-phi_list = np.linspace(0, 1 / boozer_surface.surface.nfp, 5)
 
 # Individual objective terms
 iota = Iotas(boozer_surface)
-curvelength = CurveLength(banana_curves[0])
-length_target = curvelength.J()
 
 Jiota = QuadraticPenalty(iota, iota_target)
 JnonQSRatio = sum(nonQSs)
 JBoozerResidual = sum(brs)
-JCurveLength = QuadraticPenalty(curvelength,length_target,'max')
-JCurveCurve = CurveCurveDistance(curves, CC_DIST)
-JCurveSurface = CurveSurfaceDistance(curves, boozer_surface.surface, CS_DIST)
-JSurfSurf = SurfaceSurfaceDistance(boozer_surface.surface, VV, SS_DIST)
-JCurvature = LpCurveCurvature(banana_curves[0], 2, CURVATURE_THRESHOLD)
 
 # Combined objective function
-JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTAS_WEIGHT * Jiota \
-  + LENGTH_WEIGHT * JCurveLength + CC_WEIGHT * JCurveCurve \
-    + CS_WEIGHT * JCurveSurface + SURF_DIST_WEIGHT * JSurfSurf \
-    + CURVATURE_WEIGHT * JCurvature
+JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTAS_WEIGHT * Jiota
 
 # Extract degrees of freedom
 dofs = JF.x
@@ -585,12 +501,13 @@ print(res.message)
 # SAVE OPTIMIZED STATE
 # ==============================================================================
 # Save optimized coil configurations
+# TODO: make this coils_to_vtk
 curves_to_vtk(curves, OUT_DIR_ITER + "/curves_opt", close=True)
 bs.save(OUT_DIR_ITER + "/biot_savart_opt.json")
 
 # Save optimized surface with magnetic field normal component data
-pointData = {"B_N/B": np.sum(bs.B().reshape((nphi, ntheta, 3)) *
-    boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((nphi, ntheta, 3))**2, axis=2))[:, :, None]}
+pointData = {"B_N/B": np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3)) *
+    boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3))**2, axis=2))[:, :, None]}
 
 # Print final results
 boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_opt", extra_data=pointData)
@@ -600,4 +517,4 @@ print(f"Iota: {Iotas(boozer_surface).J()}")
 
 # Generate final diagnostic plots
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotOptimized")
-crossSectionPlot(surf_coils, boozer_surface.surface, banana_curve, OUT_DIR_ITER + "/CrossSectionOptimized")
+# crossSectionPlot(surf_coils, boozer_surface.surface, banana_curve, OUT_DIR_ITER + "/CrossSectionOptimized")
