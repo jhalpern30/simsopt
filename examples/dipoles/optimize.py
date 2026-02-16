@@ -293,7 +293,6 @@ def optimize(
         "surf_aspect_ratio": surf.aspect_ratio(),
         "surf_volume": surf.volume(),
         "initial_tf_current": TF_current,
-        "initial_wp_current": wp_current_init,
         "num_wps": nwptot,
         "ntoroidal": int((np.pi/surf.nfp*(VV_R0 - VV_a) - half_per_distance + fil_distance) / (2 * dipole_radius + fil_distance)),
         "npoloidal": int(len(base_wp_coils) / int((np.pi/surf.nfp*(VV_R0 - VV_a) - half_per_distance + fil_distance) / (2 * dipole_radius + fil_distance))),

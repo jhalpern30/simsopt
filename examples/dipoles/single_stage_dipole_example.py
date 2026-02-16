@@ -8,7 +8,7 @@ from scipy.optimize import minimize
 from simsopt._core.optimizable import Optimizable
 from simsopt.geo import SurfaceRZFourier, SurfaceXYZTensorFourier, BoozerSurface, curves_to_vtk
 from simsopt.geo.surfaceobjectives import Volume, BoozerResidual, Iotas, NonQuasiSymmetricRatio
-from simsopt.field import BiotSavart, Coil, Current, coils_to_vtk
+from simsopt.field import BiotSavart, Coil, Current, coils_to_vtk, CurrentPenalty
 from simsopt.objectives import QuadraticPenalty
 from simsopt._core.optimizable import load, save
 import matplotlib.pyplot as plt
@@ -319,6 +319,8 @@ def callback(x):
     dJ_Boozer = np.linalg.norm(JBoozerResidual.dJ())
     J_iota = Jiota.J()
     dJ_iota = np.linalg.norm(Jiota.dJ())
+    J_curr = Jcurrent.J()
+    dJ_curr = np.linalg.norm(Jcurrent.dJ())
 
     iota_str = f"{iota.J():.4f}"
     volume_str = f"{boozer_surface.surface.volume():.4f}"
@@ -326,6 +328,10 @@ def callback(x):
     nphi = boozer_surface.surface.quadpoints_phi.size
     ntheta = boozer_surface.surface.quadpoints_theta.size
     BdotN = np.mean(np.abs(np.sum(bs.B().reshape((nphi, ntheta, 3)) * boozer_surface.surface.unitnormal(), axis=2)))
+
+    currents = np.array([abs(c.current.get_value()) for c in dipole_coils])
+    num_over = np.sum(currents > CURRENT_THRESHOLD)
+    max_current = np.max(currents)
 
     width = 35
     buffer = io.StringIO()
@@ -336,10 +342,12 @@ def callback(x):
     print(f"{'nonQS ratio':{width}} = {J_QS:.6e} (dJ = {dJ_QS:.6e})", file=buffer)
     print(f"{'Boozer Residual':{width}} = {J_Boozer:.6e} (dJ = {dJ_Boozer:.6e})", file=buffer)
     print(f"{'ι Penalty':{width}} = {J_iota:.6e} (dJ = {dJ_iota:.6e})", file=buffer)
+    print(f"{'Current Penalty':{width}} = {J_curr:.6e} (dJ = {dJ_curr:.6e})", file=buffer)
     print(f"{'Iotas (actual)':{width}} = {iota_str}", file=buffer)
     print(f"{'Volume':{width}} = {volume_str}", file=buffer)
     print(f"{'⟨|B·n|⟩':{width}} = {BdotN:.6e}", file=buffer)
-    print(f"{'Maximum dipole coil current':{width}} = {np.max([abs(c.current.get_value()) for c in dipole_coils]):.2f} A", file=buffer)
+    print(f"{'Max current':{width}} = {max_current:.2f} A", file=buffer)
+    print(f"{'# currents over threshold':{width}} = {num_over}", file=buffer)
     print("="*70, file=buffer)
 
     output_str = buffer.getvalue()
@@ -368,6 +376,12 @@ results = load(os.path.join(STAGE2_DIR, 'results.json'))
 CONSTRAINT_WEIGHT = 1.0
 MAXITER = 300
 iota_target = 0.10
+
+# Objective function weights and parameters
+RES_WEIGHT = 1e3
+IOTAS_WEIGHT = 1e2
+CURRENT_THRESHOLD = 400000
+CURRENT_WEIGHT = 1e-10
 
 # Convergence tolerances for different mpol values
 ftol_by_mpol = {5: 1e-5, 8: 1e-5, 9: 5e-6, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
@@ -414,7 +428,6 @@ tf_coils = coils[:num_tf_coils]
 tf_curves = [c.curve for c in tf_coils]
 dipole_coils = coils[num_tf_coils:]
 dipole_curves = [c.curve for c in dipole_coils]
-dipole_curve = dipole_curves[0]
 
 # Just triple make sure they're fixed
 for c in dipole_curves:
@@ -431,9 +444,8 @@ G0 = 2. * np.pi * current_sum * (4 * np.pi * 10**(-7) / (2 * np.pi))
 # ==============================================================================
 print(f"\n===== Starting single stage optimization for mpol = {mpol} and ntor = {ntor} =====")
 
-OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}"
+OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty"
 os.makedirs(OUT_DIR_ITER, exist_ok=True)
-# TODO: plot_cross_section(surf, VV, OUT_DIR_ITER, plot_config)
 
 # Initialize Boozer surface with target parameters
 boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, vol_target, CONSTRAINT_WEIGHT, iota_target, G0)
@@ -469,19 +481,16 @@ if boozer_type[stage]=='exact':
 else:
     brs = [BoozerResidual(boozer_surface, bs_obj)]
 
-# Objective function weights and parameters
-RES_WEIGHT = 1e3
-IOTAS_WEIGHT = 1e2
-
 # Individual objective terms
 iota = Iotas(boozer_surface)
 
 Jiota = QuadraticPenalty(iota, iota_target)
 JnonQSRatio = sum(nonQSs)
 JBoozerResidual = sum(brs)
+Jcurrent = CurrentPenalty([c.current for c in dipole_coils], CURRENT_THRESHOLD)
 
 # Combined objective function
-JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTAS_WEIGHT * Jiota
+JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTAS_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
 
 # Extract degrees of freedom
 dofs = JF.x
@@ -544,4 +553,55 @@ plot_coil_currents_on_theta_phi_grid(
     plot_config,
 )
 
-# TODO: add some kind of outputs dump like stage 2 for reproducibility + ease of results access
+# Save results dictionary for reproducibility and downstream use
+results_output = {
+    # Optimization configuration
+    "mpol": mpol,
+    "ntor": ntor,
+    "maxiter": MAXITER,
+    "constraint_weight": CONSTRAINT_WEIGHT,
+    "iota_target": iota_target,
+    "res_weight": RES_WEIGHT,
+    "iotas_weight": IOTAS_WEIGHT,
+    "current_threshold": CURRENT_THRESHOLD,
+    "current_weight": CURRENT_WEIGHT,
+    
+    # Convergence tolerances used
+    "ftol": ftol_by_mpol.get(mpol),
+    "gtol": gtol_by_mpol.get(mpol),
+    
+    # Optimization results
+    "optimization_success": res.success,
+    "optimization_message": res.message,
+    "final_objective": JF.J(),
+    "final_iota": float(Iotas(boozer_surface).J()),
+    "final_volume": float(boozer_surface.surface.volume()),
+    
+    # Diagnostic metrics
+    "nonQS_ratio": float(JnonQSRatio.J()),
+    "boozer_residual": float(JBoozerResidual.J()),
+    "iota_penalty": float(Jiota.J()),
+    "current_penalty": float(Jcurrent.J()),
+    "max_current": float(np.max([abs(c.current.get_value()) for c in dipole_coils])),
+    "num_currents_over_threshold": int(np.sum([abs(c.current.get_value()) > CURRENT_THRESHOLD for c in dipole_coils])),
+    
+    # Coil information
+    "num_tf_coils": len(tf_coils),
+    "num_dipole_coils": len(dipole_coils),
+    
+    # Inherited from stage 2
+    "eq_name": results["eq_name"],
+    "eq_dir": results["eq_dir"],
+    "surf_nfp": results["surf_nfp"],
+    "surf_s": results["surf_s"],
+    "plas_nPhi": results["plas_nPhi"],
+    "plas_nTheta": results["plas_nTheta"],
+    "VV_R0": results["VV_R0"],
+    "VV_a": results["VV_a"],
+    "VV_b": results["VV_b"],
+    "ntf": results["ntf"],
+}
+
+# Save to file
+save(results_output, os.path.join(OUT_DIR_ITER, 'results.json'))
+print(f"Results saved to {os.path.join(OUT_DIR_ITER, 'results.json')}")

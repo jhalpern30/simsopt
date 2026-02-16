@@ -492,12 +492,17 @@ def coil_currents_on_theta_phi_grid(base_wp_coils, winding_surface):
     currents_phis_thetas = np.zeros((len(base_wp_coils), 3))
     for i, wp in enumerate(base_wp_coils):
         wp.curve.unfix_all()
-        x0 = wp.curve.get("X")
-        y0 = wp.curve.get("Y")
-        z0 = wp.curve.get("Z")
+        # Prefer dofs if present; otherwise fall back to geometric center
+        if hasattr(wp.curve, "dof_names") and "X" in wp.curve.dof_names:
+            x0 = wp.curve.get("X")
+            y0 = wp.curve.get("Y")
+            z0 = wp.curve.get("Z")
+        else:
+            center = np.mean(wp.curve.gamma(), axis=0)
+            x0, y0, z0 = center
         currents_phis_thetas[i, 0] = wp.current.get_value()
-        currents_phis_thetas[i, 1] = np.arctan2(y0, x0) # phi
-        currents_phis_thetas[i, 2] = np.arctan2(z0, (np.sqrt(x0**2 + y0**2) - R0)) # theta
+        currents_phis_thetas[i, 1] = np.arctan2(y0, x0)  # phi
+        currents_phis_thetas[i, 2] = np.arctan2(z0, (np.sqrt(x0**2 + y0**2) - R0))  # theta
     return currents_phis_thetas  
 
 def get_total_amp_meters(base_tf_coils, base_wp_coils, winding_surface):

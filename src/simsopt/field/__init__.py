@@ -10,6 +10,7 @@ from .tracing import *
 from .wireframefield import *
 from .selffield import *
 from .magnetic_axis_helpers import *
+from .current_penalty import *
 
 __all__ = (
     biotsavart.__all__
@@ -24,4 +25,5 @@ __all__ = (
     + wireframefield.__all__
     + selffield.__all__
     + magnetic_axis_helpers.__all__
+    + current_penalty.__all__
 )
