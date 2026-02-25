@@ -117,7 +117,7 @@ def optimize(
         plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Post TF Optimization")
         
     # Initialize dipoles
-    base_wp_coils = generate_windowpane_array(
+    base_wp_coils, Rpol, Rtor_min, Rtor_max = generate_windowpane_array(
         winding_surface=VV,
         inboard_radius=dipole_radius,
         wp_fil_spacing=fil_distance,
@@ -128,11 +128,13 @@ def optimize(
         verbose=verbose,
         wp_coil_radius=wp_coil_radius,
     )
+    print(f"Initialized windowpane coils with Rpol={Rpol:.3f}, Rtor_min={Rtor_min:.3f}, Rtor_max={Rtor_max:.3f}")
     nwptot = len(base_wp_coils * 2 * surf.nfp)
 
     # ============================================================================
     # Optimization
     # ============================================================================
+    print(f"\n===== Starting optimization =====")
     res, bs = optimize_windowpane_currents(
         base_wp_coils=base_wp_coils,
         base_tf_coils=base_tf_coils,
@@ -149,6 +151,7 @@ def optimize(
     # ============================================================================
     # Post-processing
     # ============================================================================
+    print(f"Saving results to {output_dir}...")
     # Final Bnormal
     relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm = plot_relBfinal_norm_modB(bs, surf, output_dir, plot_config, "Final")
     Jf = SquaredFlux(surf, bs, definition=definition)
@@ -259,7 +262,9 @@ def optimize(
         # input parameters
         "filament_distance": fil_distance,
         "half_period_distance": half_per_distance,
-        "inboard_radius": dipole_radius,
+        "poloidal_radius": Rpol,
+        "toroidal_radius_inboard": Rtor_min,
+        "toroidal_radius_outboard": Rtor_max,
         "numquadpoints": numquadpoints,
         "VV_a": VV_a,
         "VV_b": VV_b,

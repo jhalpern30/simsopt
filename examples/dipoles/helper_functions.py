@@ -273,7 +273,10 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
         base_wp_coils = [Coil(curve, Current(1)) for curve in base_wp_curves]
     else:
         base_wp_coils = [CircularRegularizedCoil(curve, Current(1), wp_coil_radius) for curve in base_wp_curves]
-    return base_wp_coils
+    
+    Rtor_min = (np.pi/winding_surface.nfp*(VV_R0-VV_a) - half_per_spacing - (nwps_toroidal-1) * wp_fil_spacing) / (2 * nwps_toroidal)
+    Rtor_max = (np.pi/winding_surface.nfp*(VV_R0+VV_a) - half_per_spacing - (nwps_toroidal-1) * wp_fil_spacing ) / (2 * nwps_toroidal)
+    return base_wp_coils, Rpol, Rtor_min, Rtor_max
 
 def optimize_tfs(base_tf_coils, surf_plasma, winding_surface, CC_THRESHOLD, CC_WEIGHT, CS_THRESHOLD, CS_WEIGHT, num_fixed, definition='local', maxiter=1000, verbose=False):
     """
@@ -572,7 +575,7 @@ def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, pl
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylim(-0.1, 1.1)
-    ax.set_xlim(-0.1, np.pi / 2 + 0.1) # hardcode nfp
+    ax.set_xlim(-0.1, 0.25 + 0.05) # hardcode nfp
     ax.set_title("WP Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
