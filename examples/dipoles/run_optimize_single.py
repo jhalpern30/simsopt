@@ -13,7 +13,7 @@ from simsopt.geo import SurfaceRZFourier
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 ###### set this to wherever you'd like all the outputs from this script to go
-run_dir = os.path.join(script_dir, '../outputs/20250314_unfixed_TFs')
+run_dir = os.path.join(script_dir, '../outputs/20260216_low_current')
 
 ### Simulation parameters ###
 # Dipole parameters
@@ -28,7 +28,7 @@ surf_dof_scale = 1      # used to scale the dofs of the surface
 eq_name = 'wout_nfp22ginsburg_000_000281'  # name of the wout file from vmec
 eq_dir = os.path.join(script_dir, 'equilibria') # equilibria should be in this folder
 # Vacuum Vessel
-VV_plas_dist = 0.10
+VV_plas_dist = 0.11
 # Extract the minimum axisymmetric VV size
 eq_name_full = os.path.join(eq_dir, eq_name + ".nc")
 surf = SurfaceRZFourier.from_wout(
@@ -48,7 +48,7 @@ VV_b = VV_bmin + VV_plas_dist               # minor radius of vacuum vessel (ver
 # TF coils parameters (radius current set as 1.6 * VV_b)
 n_tf = 4                       # number of TF coils per half field period
 num_fixed = n_tf                  # number of TF coil currents to fix during combined optimization
-field_on_axis = 1.0            # on-axis magnetic field (Tesla)
+field_on_axis = 0.5            # on-axis magnetic field (Tesla)
 TF_R0 = VV_R0
 TF_a = 0.40
 TF_b = TF_a * VV_b / VV_a

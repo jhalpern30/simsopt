@@ -72,9 +72,8 @@ def optimize(
     plot_cross_section(surf, VV, output_dir, "x_section", plot_config)
 
     # Coil regularization radii (meters)
-    # Uncommenting these will make the coils_to_vtk call take a while, so leaving as 0 for now
-    tf_coil_radius = 0 #0.05  # TF coil filament radius
-    wp_coil_radius = 0 #0.025  # WP coil filament radius, gives 5cm spacing in between coils
+    tf_coil_radius = 0.05  # TF coil filament radius
+    wp_coil_radius = 0.025  # WP coil filament radius, gives 5cm spacing in between coils
 
     # Initialize TF Coils
     # Compute I from toroidal solenoid approximation, I = B_T * 2 * pi * R0 / mu0 / (2 * nfp * ntf)
@@ -100,7 +99,7 @@ def optimize(
         regularizations=tf_regularizations,
     )
     bs_tf = BiotSavart(tf_coils)
-    plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Initial")
+    # plot_relBfinal_norm_modB(bs_tf, surf, output_dir, plot_config, "Initial")
     if not fixed_geo_TFs:
         optimize_tfs(
             base_tf_coils=base_tf_coils,

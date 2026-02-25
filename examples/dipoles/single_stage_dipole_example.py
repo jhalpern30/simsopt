@@ -365,27 +365,27 @@ def callback(x):
 # ==============================================================================
 # CONFIGURATION PARAMETERS
 # ==============================================================================
-mpol = 5
-ntor = 5
-STAGE2_DIR = "../outputs/20260212_test/wout_nfp22ginsburg_000_001242/02_ntf4_diprad_0.045_VVa_0.26917896678169706_VV_R0_1.00217995400675_ellipticalVV"
+mpol = 8
+ntor = 8
+INIT_DIR = "../single_stage_outputs/wout_nfp22ginsburg_000_000281/mpol=5-ntor=5_current_penalty_200000"
 
 # This is created by and contains the results from stage 2, which we use to initialize single stage
-results = load(os.path.join(STAGE2_DIR, 'results.json'))
+results = load(os.path.join(INIT_DIR, 'results.json'))
 
 # Optimization targets and weights
 CONSTRAINT_WEIGHT = 1.0
 MAXITER = 300
-iota_target = 0.10
+iota_target = 0.15
 
 # Objective function weights and parameters
 RES_WEIGHT = 1e3
 IOTAS_WEIGHT = 1e2
-CURRENT_THRESHOLD = 400000
-CURRENT_WEIGHT = 1e-10
+CURRENT_THRESHOLD = 200000
+CURRENT_WEIGHT = 1e-14
 
 # Convergence tolerances for different mpol values
-ftol_by_mpol = {5: 1e-5, 8: 1e-5, 9: 5e-6, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
-gtol_by_mpol = {5: 1e-5, 8: 1e-2, 9: 5e-3, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
+ftol_by_mpol = {5: 1e-8, 8: 5e-9, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
+gtol_by_mpol = {5: 1e-8, 8: 5e-9, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
     
 # Output directory setup
 eq_name = results["eq_name"]
@@ -408,14 +408,19 @@ VV.set_zs(1, 0, results["VV_b"])
 # ==============================================================================
 print(f"\n===== Loading in equilibrium and coils =====")
 
-bs = load(os.path.join(STAGE2_DIR, 'bs_opt.json'))
+bs = load(os.path.join(INIT_DIR, 'bs_opt.json'))
 
 # Initialize the boundary magnetic surface and scale it to the same as stage 2
-eq_name_full = os.path.join(results["eq_dir"], results["eq_name"] + ".nc")
-surf = SurfaceRZFourier.from_wout(
-    eq_name_full, s=results["surf_s"], range="half period", nphi=results["plas_nPhi"], ntheta=results["plas_nTheta"]
-)
-surf.set_dofs(results["surf_dof_scale"] * surf.get_dofs())
+# Initialize the boundary magnetic surface and scale it to the same as stage 2
+surf_opt_path = os.path.join(INIT_DIR, 'surf_opt.json')
+if os.path.exists(surf_opt_path): # load from single-stage
+    surf = load(surf_opt_path)
+else: # load from stage 2
+    eq_name_full = os.path.join(results["eq_dir"], results["eq_name"] + ".nc")
+    surf = SurfaceRZFourier.from_wout(
+        eq_name_full, s=results["surf_s"], range="half period", nphi=results["plas_nPhi"], ntheta=results["plas_nTheta"]
+    )
+    surf.set_dofs(results["surf_dof_scale"] * surf.get_dofs())
 vol_target = surf.volume()
 print("Starting equilibrium = ", eq_name)
 print(f"Target volume: {vol_target}")
@@ -444,7 +449,7 @@ G0 = 2. * np.pi * current_sum * (4 * np.pi * 10**(-7) / (2 * np.pi))
 # ==============================================================================
 print(f"\n===== Starting single stage optimization for mpol = {mpol} and ntor = {ntor} =====")
 
-OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty"
+OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty_{CURRENT_THRESHOLD}"
 os.makedirs(OUT_DIR_ITER, exist_ok=True)
 
 # Initialize Boozer surface with target parameters
@@ -455,7 +460,7 @@ boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, vol_target, CON
 # ==============================================================================
 # Save initial coil configurations
 coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_init", close=True)
-bs.save(OUT_DIR_ITER + f"/biot_savart_init.json")
+bs.save(OUT_DIR_ITER + f"/bs_init.json")
 
 # Save initial surface with magnetic field normal component data
 pointData = {"B_N/B": np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3)) *
@@ -466,7 +471,7 @@ print(f"Volume: {boozer_surface.surface.volume()}")
 
 # Generate initial diagnostic plots
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotInitial")
-plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "CrossSectionInitial", plot_config)
+plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "BoozerCrossSectionInitial", plot_config)
 
 # ==============================================================================
 # DEFINE OBJECTIVE FUNCTION COMPONENTS
@@ -526,7 +531,7 @@ print(res.message)
 # ==============================================================================
 # Save optimized coil configurations
 coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_opt", close=True)
-bs.save(OUT_DIR_ITER + "/biot_savart_opt.json")
+bs.save(OUT_DIR_ITER + "/bs_opt.json")
 
 # Save vacuum vessel for visualization
 VV.to_vtk(os.path.join(OUT_DIR_ITER, "vacuum_vessel"))
@@ -543,10 +548,10 @@ print(f"Iota: {Iotas(boozer_surface).J()}")
 
 # Generate final diagnostic plots
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotOptimized")
-plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "CrossSectionOptimized", plot_config)
+plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "BoozerCrossSectionOptimized", plot_config)
 
 # plots currents on surface
-wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(dipole_coils[1:len(dipole_coils)//surf.nfp//2], VV)
+wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(dipole_coils, VV)
 plot_coil_currents_on_theta_phi_grid(
     wp_currents_phis_thetas,
     OUT_DIR_ITER,
@@ -555,6 +560,9 @@ plot_coil_currents_on_theta_phi_grid(
 
 # Save results dictionary for reproducibility and downstream use
 results_output = {
+    # Stage 2 directory
+    "init_dir": INIT_DIR,
+
     # Optimization configuration
     "mpol": mpol,
     "ntor": ntor,

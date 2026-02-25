@@ -185,7 +185,7 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed
         base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
     return base_tf_curves, base_tf_coils
 
-def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False, wp_coil_radius=None):
+def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False, wp_coil_radius=0.0):
     """
     Initialize an array of nwps_poloidal x nwps_toroidal planar windowpane coils on a winding surface
     Coils are initialized with a current of 1 in order to simplify the logic in the precomputed section
@@ -269,7 +269,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     # We must initialize the curves with 1A current because of the way we scale the BdotN in the precomputed
     # section of optimize_windowpane_currents - I did not notice any dependence on the intial windowpane current
     # but if we need to add variability here later we'll need to update the optimization or just use precomputed = false
-    if wp_coil_radius is None:
+    if wp_coil_radius == 0.0:
         base_wp_coils = [Coil(curve, Current(1)) for curve in base_wp_curves]
     else:
         base_wp_coils = [CircularRegularizedCoil(curve, Current(1), wp_coil_radius) for curve in base_wp_curves]
@@ -572,6 +572,7 @@ def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, pl
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylim(-0.1, 1.1)
+    ax.set_xlim(-0.1, np.pi / 2 + 0.1) # hardcode nfp
     ax.set_title("WP Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
