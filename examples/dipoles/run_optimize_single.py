@@ -13,13 +13,13 @@ from simsopt.geo import SurfaceRZFourier
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 ###### set this to wherever you'd like all the outputs from this script to go
-run_dir = os.path.join(script_dir, '../outputs/20260216_low_current')
+run_dir = os.path.join(script_dir, '../outputs/20260225_scans')
 
 ### Simulation parameters ###
 # Dipole parameters
 fil_distance = 0.05 # distance between dipole filaments for finite coil winding pack [m]
 half_per_distance = 0.05 # distance between dipole panels between half field periods of the device [m]
-dipole_radius = 0.045 # radius of dipoles (poloidally constant, will vary toroidally so this is at inboard midplane) [m]
+dipole_radius = 0.05 # target radius of dipoles (poloidally constant, will vary toroidally so this is at inboard midplane) [m]
 numquadpoints = 64 # number of quad points for coils
 # Plasma Surface
 plas_nPhi = 128; plas_nTheta=64    # plasma surface quad points

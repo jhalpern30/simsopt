@@ -365,16 +365,16 @@ def callback(x):
 # ==============================================================================
 # CONFIGURATION PARAMETERS
 # ==============================================================================
-mpol = 8
-ntor = 8
-INIT_DIR = "../single_stage_outputs/wout_nfp22ginsburg_000_000281/mpol=5-ntor=5_current_penalty_200000"
+mpol = 5
+ntor = 5
+INIT_DIR = "../outputs/20260225_scans/wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV"
 
 # This is created by and contains the results from stage 2, which we use to initialize single stage
 results = load(os.path.join(INIT_DIR, 'results.json'))
 
 # Optimization targets and weights
 CONSTRAINT_WEIGHT = 1.0
-MAXITER = 300
+MAXITER = 15
 iota_target = 0.15
 
 # Objective function weights and parameters
