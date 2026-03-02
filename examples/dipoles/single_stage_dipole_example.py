@@ -367,7 +367,7 @@ def callback(x):
 # ==============================================================================
 mpol = 5
 ntor = 5
-INIT_DIR = "../outputs/20260225_scans/wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV"
+INIT_DIR = "../nersc_run/test_wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV"
 
 # This is created by and contains the results from stage 2, which we use to initialize single stage
 results = load(os.path.join(INIT_DIR, 'results.json'))
@@ -449,7 +449,7 @@ G0 = 2. * np.pi * current_sum * (4 * np.pi * 10**(-7) / (2 * np.pi))
 # ==============================================================================
 print(f"\n===== Starting single stage optimization for mpol = {mpol} and ntor = {ntor} =====")
 
-OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty_{CURRENT_THRESHOLD}"
+OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty_{CURRENT_THRESHOLD}_test"
 os.makedirs(OUT_DIR_ITER, exist_ok=True)
 
 # Initialize Boozer surface with target parameters

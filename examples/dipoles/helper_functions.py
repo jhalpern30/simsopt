@@ -574,8 +574,8 @@ def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, pl
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_xlim(-0.05, 0.255) # hardcode nfp
+    ax.set_ylim(-0.005, 1.105)
+    ax.set_xlim(-0.005, 0.255) # hardcode nfp
     ax.set_title("WP Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
