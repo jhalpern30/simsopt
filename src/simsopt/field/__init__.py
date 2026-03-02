@@ -11,6 +11,7 @@ from .wireframefield import *
 from .selffield import *
 from .magnetic_axis_helpers import *
 from .current_penalty import *
+from .force import *
 
 __all__ = (
     biotsavart.__all__
@@ -26,4 +27,5 @@ __all__ = (
     + selffield.__all__
     + magnetic_axis_helpers.__all__
     + current_penalty.__all__
+    + force.__all__
 )
