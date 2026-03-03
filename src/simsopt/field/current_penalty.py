@@ -17,7 +17,10 @@ class CurrentPenalty(Optimizable):
     """
     Penalize currents above a threshold using a one-sided quadratic penalty:
 
-        J = sum_i max(0, I_i - I_threshold)^2
+        J = sum_i (max(0, I_i - I_threshold) / I_threshold)^2
+    
+    We normalize the penalty by the current threshold to ensure that the penalty is a reasonable
+    magnitude for the current optimization.
     """
 
     def __init__(self, currents, current_threshold):
@@ -28,7 +31,8 @@ class CurrentPenalty(Optimizable):
         def _penalty(currents_vec):
             abs_currents = jnp.abs(currents_vec)
             excess = jnp.maximum(0.0, abs_currents - self.current_threshold)
-            return jnp.sum(excess ** 2)
+            normalized = excess / self.current_threshold
+            return jnp.sum(normalized ** 2)
 
         self._jax_penalty = _penalty
         self._jax_grad = jax.grad(_penalty)

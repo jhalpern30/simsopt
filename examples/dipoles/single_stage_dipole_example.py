@@ -28,22 +28,22 @@ plot_config = PlotConfig(
 class BoozerResidualExact(Optimizable):
     r"""
     This term returns the Boozer residual penalty term
-    
+
     .. math::
        J = \int_0^{1/n_{\text{fp}}} \int_0^1 \| \mathbf r \|^2 ~d\theta ~d\varphi + w (\text{label.J()-boozer_surface.constraint_weight})^2.
-    
+
     where
-    
+
     .. math::
         \mathbf r = \frac{1}{\|\mathbf B\|}[G\mathbf B_\text{BS}(\mathbf x) - ||\mathbf B_\text{BS}(\mathbf x)||^2  (\mathbf x_\varphi + \iota  \mathbf x_\theta)]
-    
+
     """
 
     def __init__(self, boozer_surface, bs):
         Optimizable.__init__(self, depends_on=[boozer_surface])
         in_surface = boozer_surface.surface
         self.boozer_surface = boozer_surface
-        
+
         # same number of points as on the solved surface
         nphis = in_surface.quadpoints_phi.size
         phis = np.linspace(0,1./in_surface.nfp,nphis*4,endpoint=False)
@@ -64,11 +64,11 @@ class BoozerResidualExact(Optimizable):
         """
         Return the value of the penalty function.
         """
-        
+
         if self._J is None:
             self.compute()
         return self._J
-    
+
     @derivative_dec
     def dJ(self):
         """
@@ -90,7 +90,7 @@ class BoozerResidualExact(Optimizable):
 
         self.surface.set_dofs(self.in_surface.get_dofs())
         self.biotsavart.set_points(self.surface.gamma().reshape((-1, 3)))
- 
+
         nphi = self.surface.quadpoints_phi.size
         ntheta = self.surface.quadpoints_theta.size
         num_points = 3 * nphi * ntheta
@@ -102,7 +102,7 @@ class BoozerResidualExact(Optimizable):
         r, J = boozer_surface_residual(surface, iota, G, self.biotsavart, derivatives=1, weight_inv_modB=True)
         rtil = np.concatenate((r/np.sqrt(num_points), [np.sqrt(self.constraint_weight)*(self.boozer_surface.label.J()-self.boozer_surface.targetlabel)]))
         self._J = 0.5*np.sum(rtil**2)
-        
+
         booz_surf = self.boozer_surface
         P, L, U = booz_surf.res['PLU']
         dconstraint_dcoils_vjp = booz_surf.res['vjp']
@@ -116,17 +116,17 @@ class BoozerResidualExact(Optimizable):
         dl[:dlabel_dsurface.size] = dlabel_dsurface
         Jtil = np.concatenate((J/np.sqrt(num_points), np.sqrt(self.constraint_weight) * dl[None, :]), axis=0)
         dJ_ds = Jtil.T@rtil
-        
+
         adj = forward_backward(P, L, U, dJ_ds)
-        
+
         adj_times_dg_dcoil = dconstraint_dcoils_vjp(adj, booz_surf, iota, G)
         self._dJ = dJ_by_dcoils - adj_times_dg_dcoil
-        
+
     def dJ_by_dB(self):
         """
         Return the partial derivative of the objective with respect to the magnetic field
         """
-        
+
         surface = self.surface
         res = self.boozer_surface.res
         nphi = self.surface.quadpoints_phi.size
@@ -136,7 +136,7 @@ class BoozerResidualExact(Optimizable):
 
         r /= np.sqrt(num_points)
         r_dB /= np.sqrt(num_points)
-        
+
         dJ_by_dB = r[:, None]*r_dB
         dJ_by_dB = np.sum(dJ_by_dB.reshape((-1, 3, 3)), axis=1)
         return dJ_by_dB
@@ -144,7 +144,7 @@ class BoozerResidualExact(Optimizable):
 def initialize_boozer_surface(surf_prev, mpol, ntor, bs, vol_target, constraint_weight, iota, G0):
     """
     This initializes the boozer surface, using either the boozer "exact" algorithm, or the boozer "least squares" algorithm
-    
+
     surf_prev: Any instance of simsopt.geo.Surface. This is the initial guess for the boozer surface solver
     mpol: SurfaceXYZTensorFourier resolution (both toroidal and poloidal)
     bs: simsopt.field.BiotSavart instance
@@ -174,7 +174,7 @@ def initialize_boozer_surface(surf_prev, mpol, ntor, bs, vol_target, constraint_
               quadpoints_phi=np.linspace(0,1./surf.nfp,2*mpol+1,endpoint=False),
               dofs=surf.dofs
               )
-    
+
         vol = Volume(surf_exact)
         boozer_surface = BoozerSurface(bs, surf_exact, vol, vol_target, None, options={'verbose':True})
 
@@ -312,7 +312,7 @@ def callback(x):
     # Evaluate diagnostics
     J = run_dict['J']
     grad = run_dict['dJ']
-    
+
     J_QS = JnonQSRatio.J()
     dJ_QS = np.linalg.norm(JnonQSRatio.dJ())
     J_Boozer = JBoozerResidual.J()
@@ -355,42 +355,83 @@ def callback(x):
 
     print(output_str)
 
-    filename = OUT_DIR_ITER + "/log.txt"
+    filename = OUT_DIR_ITER + "/iterations.txt"
     with open(filename, "a") as f:
         f.write(output_str + "\n")
-
     # Advance iteration counter
     run_dict['it'] += 1
 
 # ==============================================================================
 # CONFIGURATION PARAMETERS
 # ==============================================================================
+# Boozer surface resolution
 mpol = 5
 ntor = 5
-INIT_DIR = "../nersc_run/test_wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV"
+
+# Optimization targets and weights
+CONSTRAINT_WEIGHT = 1.0
+MAXITER = 50
+
+# Objective function weights and parameters
+IOTA_TARGET = 0.08
+IOTA_WEIGHT = 1e2
+RES_WEIGHT = 1e2
+CURRENT_THRESHOLD = 150000
+CURRENT_WEIGHT = 1
+
+# Output directory setup
+INIT_DIR = "../outputs/20260225_scans/wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV"
 
 # This is created by and contains the results from stage 2, which we use to initialize single stage
 results = load(os.path.join(INIT_DIR, 'results.json'))
 
-# Optimization targets and weights
-CONSTRAINT_WEIGHT = 1.0
-MAXITER = 15
-iota_target = 0.15
-
-# Objective function weights and parameters
-RES_WEIGHT = 1e3
-IOTAS_WEIGHT = 1e2
-CURRENT_THRESHOLD = 200000
-CURRENT_WEIGHT = 1e-14
-
 # Convergence tolerances for different mpol values
-ftol_by_mpol = {5: 1e-8, 8: 5e-9, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
-gtol_by_mpol = {5: 1e-8, 8: 5e-9, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
+ftol_by_mpol = {5: 1e-2, 8: 5e-3, 10: 1e-6, 11: 5e-7, 12: 1e-7, 13: 5e-8, 14: 1e-8, 15: 5e-9, 16: 1e-9, 17: 5e-10, 18: 1e-10}
+gtol_by_mpol = {5: 1e-6, 8: 1e-7, 10: 1e-3, 11: 5e-4, 12: 1e-4, 13: 5e-5, 14: 1e-5, 15: 5e-6, 16: 1e-6, 17: 5e-7, 18: 1e-7}
     
 # Output directory setup
 eq_name = results["eq_name"]
-OUT_DIR = f"../single_stage_outputs/{eq_name}"
-os.makedirs(OUT_DIR, exist_ok=True)
+OUT_ROOT = f"../single_stage_outputs/{eq_name}"
+os.makedirs(OUT_ROOT, exist_ok=True)
+
+# Determine next run number for this equilibrium
+existing_runs = [
+    d for d in os.listdir(OUT_ROOT)
+    if os.path.isdir(os.path.join(OUT_ROOT, d)) and d.startswith("run_")
+]
+run_indices = []
+for d in existing_runs:
+    parts = d.split("_", 2)
+    if len(parts) >= 2:
+        try:
+            run_indices.append(int(parts[1]))
+        except ValueError:
+            pass
+next_run_idx = max(run_indices) + 1 if run_indices else 1
+
+# Build run-specific directory name including key weights/targets
+run_prefix = f"run_{next_run_idx:03d}"
+run_meta = (
+    f"iota_tar{IOTA_TARGET:g}"
+    f"_weight{IOTA_WEIGHT:g}"
+    f"_res_weight{RES_WEIGHT:g}"
+    f"_cur_tar{CURRENT_THRESHOLD:g}"
+    f"_weight{CURRENT_WEIGHT:g}"
+)
+OUT_DIR_RUN = os.path.join(OUT_ROOT, f"{run_prefix}_{run_meta}")
+os.makedirs(OUT_DIR_RUN, exist_ok=True)
+
+# Within each run, create a subfolder for the specific (mpol, ntor) resolution
+OUT_DIR_ITER = os.path.join(OUT_DIR_RUN, f"mpol{mpol}_ntor{ntor}_test")
+os.makedirs(OUT_DIR_ITER, exist_ok=True)
+
+# Redirect all standard output and errors to a log file in OUT_DIR_ITER
+print(f"Redirecting output to {OUT_DIR_ITER}/log.txt")
+log_path = os.path.join(OUT_DIR_ITER, "log.txt")
+log_file = open(log_path, "a", buffering=1)
+sys.stdout = log_file
+sys.stderr = log_file
+
 boozer_type = {'initial': 'least_squares', 'final': 'exact'}  # example
 stage = 'initial'  # or 'final', depending on what you want
 
@@ -407,15 +448,14 @@ VV.set_zs(1, 0, results["VV_b"])
 # LOAD EQUILIBRIUM AND COILS
 # ==============================================================================
 print(f"\n===== Loading in equilibrium and coils =====")
-
+# Load coil set from previous run
 bs = load(os.path.join(INIT_DIR, 'bs_opt.json'))
 
-# Initialize the boundary magnetic surface and scale it to the same as stage 2
-# Initialize the boundary magnetic surface and scale it to the same as stage 2
+# Initialize the boundary magnetic surface
 surf_opt_path = os.path.join(INIT_DIR, 'surf_opt.json')
 if os.path.exists(surf_opt_path): # load from single-stage
     surf = load(surf_opt_path)
-else: # load from stage 2
+else: # load and scale the surface from stage 2
     eq_name_full = os.path.join(results["eq_dir"], results["eq_name"] + ".nc")
     surf = SurfaceRZFourier.from_wout(
         eq_name_full, s=results["surf_s"], range="half period", nphi=results["plas_nPhi"], ntheta=results["plas_nTheta"]
@@ -449,11 +489,8 @@ G0 = 2. * np.pi * current_sum * (4 * np.pi * 10**(-7) / (2 * np.pi))
 # ==============================================================================
 print(f"\n===== Starting single stage optimization for mpol = {mpol} and ntor = {ntor} =====")
 
-OUT_DIR_ITER = OUT_DIR + f"/mpol={mpol}-ntor={ntor}_current_penalty_{CURRENT_THRESHOLD}_test"
-os.makedirs(OUT_DIR_ITER, exist_ok=True)
-
 # Initialize Boozer surface with target parameters
-boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, vol_target, CONSTRAINT_WEIGHT, iota_target, G0)
+boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, vol_target, CONSTRAINT_WEIGHT, IOTA_TARGET, G0)
 
 # ==============================================================================
 # SAVE INITIAL STATE
@@ -489,13 +526,13 @@ else:
 # Individual objective terms
 iota = Iotas(boozer_surface)
 
-Jiota = QuadraticPenalty(iota, iota_target)
+Jiota = QuadraticPenalty(iota, IOTA_TARGET)
 JnonQSRatio = sum(nonQSs)
 JBoozerResidual = sum(brs)
 Jcurrent = CurrentPenalty([c.current for c in dipole_coils], CURRENT_THRESHOLD)
 
 # Combined objective function
-JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTAS_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
+JF = JnonQSRatio + RES_WEIGHT * JBoozerResidual + IOTA_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
 
 # Extract degrees of freedom
 dofs = JF.x
@@ -522,8 +559,14 @@ run_dict = {
 ftol = ftol_by_mpol.get(mpol)
 gtol = gtol_by_mpol.get(mpol)
 
-# Run L-BFGS-B optimization
-res = minimize(fun, dofs, jac=True, method='L-BFGS-B', callback=callback, options={'maxiter': MAXITER, 'maxcor': 300, 'ftol': ftol, 'gtol': gtol})
+# Use Python BFGS instead of Fortran L-BFGS-B: the simsoptpp C++ extension
+# dynamically loads Cray libsci which overwrites the ddot symbol used by
+# L-BFGS-B's Fortran code, causing a broken initial step (~1e10 * ||g||).
+# Python BFGS uses numpy's own BLAS (OpenBLAS) and is unaffected.
+# With 84 DOFs the full Hessian approximation is negligible in memory.
+res = minimize(fun, dofs, jac=True, method='BFGS',
+               callback=callback,
+               options={'maxiter': MAXITER, 'gtol': gtol})
 print(res.message)
 
 # ==============================================================================
@@ -539,10 +582,10 @@ VV.to_vtk(os.path.join(OUT_DIR_ITER, "vacuum_vessel"))
 # Save optimized surface with magnetic field normal component data
 pointData = {"B_N/B": np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3)) *
     boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((results["plas_nPhi"], results["plas_nTheta"], 3))**2, axis=2))[:, :, None]}
-
-# Print final results
 boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_opt", extra_data=pointData)
 boozer_surface.surface.save(OUT_DIR_ITER + f"/surf_opt.json")
+
+# Print final results
 print(f"Volume: {boozer_surface.surface.volume()}")
 print(f"Iota: {Iotas(boozer_surface).J()}")
 
@@ -550,7 +593,7 @@ print(f"Iota: {Iotas(boozer_surface).J()}")
 normPlot(boozer_surface.surface, bs, OUT_DIR_ITER + "/NormPlotOptimized")
 plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "BoozerCrossSectionOptimized", plot_config)
 
-# plots currents on surface
+# Make a diagnostic plot of the dipole currents on the surface
 wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(dipole_coils, VV)
 plot_coil_currents_on_theta_phi_grid(
     wp_currents_phis_thetas,
@@ -568,23 +611,23 @@ results_output = {
     "ntor": ntor,
     "maxiter": MAXITER,
     "constraint_weight": CONSTRAINT_WEIGHT,
-    "iota_target": iota_target,
+    "iota_target": IOTA_TARGET,
     "res_weight": RES_WEIGHT,
-    "iotas_weight": IOTAS_WEIGHT,
+    "iota_weight": IOTA_WEIGHT,
     "current_threshold": CURRENT_THRESHOLD,
     "current_weight": CURRENT_WEIGHT,
-    
+
     # Convergence tolerances used
     "ftol": ftol_by_mpol.get(mpol),
     "gtol": gtol_by_mpol.get(mpol),
-    
+
     # Optimization results
     "optimization_success": res.success,
     "optimization_message": res.message,
     "final_objective": JF.J(),
     "final_iota": float(Iotas(boozer_surface).J()),
     "final_volume": float(boozer_surface.surface.volume()),
-    
+
     # Diagnostic metrics
     "nonQS_ratio": float(JnonQSRatio.J()),
     "boozer_residual": float(JBoozerResidual.J()),
@@ -592,11 +635,11 @@ results_output = {
     "current_penalty": float(Jcurrent.J()),
     "max_current": float(np.max([abs(c.current.get_value()) for c in dipole_coils])),
     "num_currents_over_threshold": int(np.sum([abs(c.current.get_value()) > CURRENT_THRESHOLD for c in dipole_coils])),
-    
+
     # Coil information
-    "num_tf_coils": len(tf_coils),
-    "num_dipole_coils": len(dipole_coils),
-    
+    "# TF coils": len(tf_coils),
+    "# dipole coils": len(dipole_coils),
+
     # Inherited from stage 2
     "eq_name": results["eq_name"],
     "eq_dir": results["eq_dir"],
@@ -613,3 +656,6 @@ results_output = {
 # Save to file
 save(results_output, os.path.join(OUT_DIR_ITER, 'results.json'))
 print(f"Results saved to {os.path.join(OUT_DIR_ITER, 'results.json')}")
+
+# Close log file
+log_file.close()
