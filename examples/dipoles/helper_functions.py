@@ -549,19 +549,21 @@ def get_total_amp_meters(base_tf_coils, base_wp_coils, winding_surface):
         total += ntor * base_wp_coils[max_index].current.get_value() * np.sum(np.linalg.norm(np.diff(base_wp_coils[max_index].curve.gamma(), axis=0), axis=1))
     return total * 2 * winding_surface.nfp
 
-def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, plot_config):
+def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_config):
     """
-    Plots the current of each coil on a 2D grid with theta on the y-axis and phi on the x-axis.
+    Calculates and plots the current of each coil on a 2D grid with theta on the y-axis and phi on the x-axis.
     Note that the size of the dipoles are arbitrarily set and not physical in the plot. This is
     merely a visualization of the coil currents on the winding surface.
     Parameters:
-    wp_currents_phis_thetas (ndarray): A (num_coils, 3) array where each row represents (current, phi, theta).
+    coils (list): List of coil objects that lie on the winding surface (VV).
+    VV (Surface): Vacuum vessel surface.
     output_dir (str): Directory to save the plot.
     plot_config (PlotConfig): Plot formatting configuration.
     """
-    currents = wp_currents_phis_thetas[:, 0] / 1000
-    phis = wp_currents_phis_thetas[:, 1]
-    thetas = np.mod(wp_currents_phis_thetas[:, 2], 2 * np.pi)
+    currents_phis_thetas = coil_currents_on_theta_phi_grid(coils, VV)
+    currents = currents_phis_thetas[:, 0] / 1000
+    phis = currents_phis_thetas[:, 1]
+    thetas = np.mod(currents_phis_thetas[:, 2], 2 * np.pi)
     vmax = np.max(np.abs(currents))  # Symmetric range
     norm = mcolors.Normalize(vmin=-vmax, vmax=vmax)
     cmap = plt.cm.seismic  # Diverging colormap (red-negative, blue-positive)
@@ -576,14 +578,14 @@ def plot_coil_currents_on_theta_phi_grid(wp_currents_phis_thetas, output_dir, pl
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylim(-0.005, 1.105)
     ax.set_xlim(-0.005, 0.255) # hardcode nfp
-    ax.set_title("WP Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
+    ax.set_title(f"{label} Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'wp_coil_currents.png'), dpi=plot_config.dpi)
+    plt.savefig(os.path.join(output_dir, f'coil_currents_{label}.png'), dpi=plot_config.dpi)
     plt.close()
     return
 
-def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
+def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
     """
     Creates Bnormal and modB plots for Biot-Savart object on plasma surface.
     
@@ -591,8 +593,8 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
         bs: BiotSavart object
         surf_plas: Plasma surface
         output_dir (str): Directory to save plots
-        plot_config (PlotConfig): Plot formatting configuration
         label (str): Label for the plot title and filename
+        plot_config (PlotConfig): Plot formatting configuration
     
     Returns:
         tuple: (relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm)
@@ -609,7 +611,6 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
     Bfinal_norm = np.sum(Bfinal * unitn, axis=2)[:, :, None]
     modBfinal = np.sqrt(np.sum(Bfinal**2, axis=2))[:, :, None]
     relBfinal_norm = Bfinal_norm / modBfinal
-    #print(f"Maximum/Average |relBfinal_norm| for theta = 0: {np.max(np.abs(relBfinal_norm[:, 0])):.4e}/{np.mean(np.abs(relBfinal_norm[:, 0])):.4e}")
     abs_relBfinal_norm_dA = np.abs(relBfinal_norm.reshape((-1, 1))) * surf_area
     mean_abs_relBfinal_norm = np.sum(abs_relBfinal_norm_dA) / np.sum(surf_area)
     max_rBnorm = np.max(np.abs(relBfinal_norm))
@@ -620,11 +621,10 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
     cbar = fig.colorbar(contour, ax=ax)
     cbar.ax.set_ylabel(r'$\mathbf{B}\cdot\mathbf{n}/|\mathbf{B}|$', fontsize=plot_config.cbarfontsize, fontweight='bold')
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
-    ax.set_title(f'{label} Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=plot_config.titlefontsize, fontweight='bold')
+    ax.set_title(f'Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=plot_config.titlefontsize, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'relBn_{label.replace(" ", "")}.png'), dpi=plot_config.dpi)
+    plt.savefig(os.path.join(output_dir, f'relBn_{label}.png'), dpi=plot_config.dpi)
     plt.close()
-    # ModB
     abs_modBfinal_dA = np.abs(modBfinal.reshape((-1, 1))) * surf_area
     mean_abs_modBfinal = np.sum(abs_modBfinal_dA) / np.sum(surf_area)
     fig, ax = plt.subplots()
@@ -636,11 +636,11 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, plot_config, label):
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
     ax.set_title(f'Surface-averaged |B| = {mean_abs_modBfinal:.3f}', fontsize=plot_config.titlefontsize, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'modB_{label.replace(" ", "")}.png'), dpi=plot_config.dpi)
+    plt.savefig(os.path.join(output_dir, f'modB_{label}.png'), dpi=plot_config.dpi)
     plt.close()
     return relBfinal_norm, mean_abs_relBfinal_norm, np.max(relBfinal_norm)
 
-def plot_cross_section(surf, VV, output_dir, figname, plot_config):
+def plot_cross_section(surf, VV, output_dir, label, plot_config):
     """
     Plots cross section of plasma and vacuum vessel at a few toroidal locations.
     
@@ -648,7 +648,7 @@ def plot_cross_section(surf, VV, output_dir, figname, plot_config):
         surf: Plasma surface
         VV: Vacuum vessel surface
         output_dir (str): Directory to save plot
-        figname (str): Filename for the saved plot
+        label (str): Label for the plot title and filename
         plot_config (PlotConfig): Plot formatting configuration
     """
     plt.figure(figsize=(7,6))
@@ -669,6 +669,6 @@ def plot_cross_section(surf, VV, output_dir, figname, plot_config):
     plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, figname + '.png'), dpi=plot_config.dpi, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, f'x_section_{label}.png'), dpi=plot_config.dpi, bbox_inches='tight')
     plt.close()
     return

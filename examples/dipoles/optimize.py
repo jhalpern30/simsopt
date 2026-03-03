@@ -156,12 +156,7 @@ def optimize(
     relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm = plot_relBfinal_norm_modB(bs, surf, output_dir, plot_config, "Final")
     Jf = SquaredFlux(surf, bs, definition=definition)
     # plots currents on surface
-    wp_currents_phis_thetas = coil_currents_on_theta_phi_grid(base_wp_coils, VV)
-    plot_coil_currents_on_theta_phi_grid(
-        wp_currents_phis_thetas,
-        output_dir,
-        plot_config,
-    )
+    plot_coil_currents_on_theta_phi_grid(base_wp_coils, VV, output_dir, "Final", plot_config)
 
     # Prep coil data
     tf_regularizations = [c.regularization for c in base_tf_coils] if hasattr(base_tf_coils[0], "regularization") else None
