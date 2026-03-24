@@ -70,3 +70,5 @@ tests/boundary*
 # Version file
 src/simsopt/_version.py
 
+examples/outputs/*
+examples/single_stage_scans*
