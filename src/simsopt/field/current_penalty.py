@@ -63,6 +63,7 @@ class CurrentPenalty(Optimizable):
         dJ_val = np.asarray(self._jax_grad(currents_vec), dtype=float)
 
         self._J = float(J_val)
-        self._dJ = Derivative(
-            {c: np.atleast_1d(dJ_val[i]) for i, c in enumerate(self.currents)}
-        )
+        deriv = Derivative({})
+        for i, c in enumerate(self.currents):
+            deriv += c.vjp(np.atleast_1d(dJ_val[i]))
+        self._dJ = deriv
