@@ -179,7 +179,7 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed
             c.set("zs(1)", -TF_b) # see create_equally_spaced_curves doc for minus sign info
             c.fix_all()
     # Now make the curves into coils
-    if tf_coil_radius is None:
+    if tf_coil_radius == 0:
         base_tf_coils = [Coil(curve, Current(TF_current)) for curve in base_tf_curves]
     else:
         base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
@@ -226,7 +226,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     dgammadtheta_interpolators = [RegularGridInterpolator((winding_surface.quadpoints_phi, winding_surface.quadpoints_theta), winding_surface.dgamma_dtheta()[..., i], method='linear') for i in range(3)]
     # Initialize curves
     base_wp_curves = []
-    for ii in range(1, nwps_poloidal): # remove theta = 0 coil (ii = 0)
+    for ii in range(0, nwps_poloidal): # Can alter this to remove theta = 0 coil (ii = 0)
         for jj in range(nwps_toroidal):
             theta_coil = theta_locs[ii]
             r = VV_a*VV_b / np.sqrt((VV_b*np.cos(theta_coil))**2 + (VV_a*np.sin(theta_coil))**2)
@@ -276,7 +276,7 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     
     Rtor_min = (np.pi/winding_surface.nfp*(VV_R0-VV_a) - half_per_spacing - (nwps_toroidal-1) * wp_fil_spacing) / (2 * nwps_toroidal)
     Rtor_max = (np.pi/winding_surface.nfp*(VV_R0+VV_a) - half_per_spacing - (nwps_toroidal-1) * wp_fil_spacing ) / (2 * nwps_toroidal)
-    return base_wp_coils, Rpol, Rtor_min, Rtor_max
+    return base_wp_coils, Rpol, Rtor_min, Rtor_max, nwps_poloidal, nwps_toroidal
 
 def optimize_tfs(base_tf_coils, surf_plasma, winding_surface, CC_THRESHOLD, CC_WEIGHT, CS_THRESHOLD, CS_WEIGHT, num_fixed, definition='local', maxiter=1000, verbose=False):
     """
@@ -506,6 +506,7 @@ def coil_currents_on_theta_phi_grid(base_wp_coils, winding_surface):
         currents_phis_thetas[i, 0] = wp.current.get_value()
         currents_phis_thetas[i, 1] = np.arctan2(y0, x0)  # phi
         currents_phis_thetas[i, 2] = np.arctan2(z0, (np.sqrt(x0**2 + y0**2) - R0))  # theta
+        wp.curve.fix_all()
     return currents_phis_thetas  
 
 def get_total_amp_meters(base_tf_coils, base_wp_coils, winding_surface):
@@ -576,9 +577,9 @@ def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_conf
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
-    ax.set_ylim(-0.005, 1.105)
+    ax.set_ylim(-0.005, 1.005)
     ax.set_xlim(-0.005, 0.255) # hardcode nfp
-    ax.set_title(f"{label} Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
+    ax.set_title(f"Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'coil_currents_{label}.png'), dpi=plot_config.dpi)
@@ -660,12 +661,11 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config):
         cs2 = VV.cross_section(phi_slice * 2 * np.pi)
         rs2 = np.sqrt(cs2[:,0]**2 + cs2[:,1]**2); rs2 = np.append(rs2, rs2[0])
         zs2 = cs2[:,2]; zs2 = np.append(zs2, zs2[0])    
-        plt.plot(rs, zs, label=fr'$\phi$ = {phi_slice*2:.2f}π')
+        plt.plot(rs, zs)
         plt.plot(rs2, zs2, 'k')
         plt.plot(np.mean(rs), np.mean(zs), 'kx')
     plt.xlabel('R [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
     plt.ylabel('Z [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
-    plt.legend(loc='upper right', bbox_to_anchor=(1.5, 1), fontsize=plot_config.legendfontsize)
     plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.tight_layout()

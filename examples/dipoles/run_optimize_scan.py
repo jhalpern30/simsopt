@@ -53,13 +53,6 @@ MAXITER = 2500  # Number of iterations to perform:
 CURRENT_THRESHOLD = 5e5  # Current penality threshold and weight
 CURRENT_WEIGHT = 1e-12  # make sure weight is appropriate for the current threshold
 verbose = False  # keep printing to a minimum
-# Figure parameters
-dpi = 100
-titlefontsize = 18
-axisfontsize = 16
-legendfontsize = 14
-ticklabelfontsize = 14
-cbarfontsize = 18
 
 # Extract the minimum axisymmetric VV size
 eq_name_full = os.path.join(eq_dir, eq_name + ".nc")
@@ -90,7 +83,7 @@ TF_a = 0.4  # this is what HBT is - keep for now, since if this varies so will r
 TF_b = (
     TF_a * VV_b / VV_a
 )  # keep ellipticity of initial VV/plasma? Shouldn't matter as long as its fixed
-fixed_geo_TFs = False
+fixed_geo_TFs = True
 CC_THRESHOLD = 0.1
 CC_WEIGHT = 100
 CS_THRESHOLD = 0.1
@@ -167,12 +160,6 @@ for dipole_radius in dipole_radius_range:
                 MAXITER=MAXITER,
                 CURRENT_THRESHOLD=CURRENT_THRESHOLD,
                 CURRENT_WEIGHT=CURRENT_WEIGHT,
-                dpi=dpi,
-                titlefontsize=titlefontsize,
-                axisfontsize=axisfontsize,
-                legendfontsize=legendfontsize,
-                ticklabelfontsize=ticklabelfontsize,
-                cbarfontsize=cbarfontsize,
                 output_dir=run_dir,
                 verbose=verbose,
             )
