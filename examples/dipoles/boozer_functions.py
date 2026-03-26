@@ -162,8 +162,9 @@ def initialize_boozer_surface(surf_prev, mpol, ntor, bs, vol_target, constraint_
     # Check if boozer algo is successful
     success1 = res['success'] # True if the boozer surface algo converged
     success2 = not boozer_surface.surface.is_self_intersecting() # True if surface is not self intersecting
-    success = success1 and success2
-    if not success:
-        raise RuntimeError("Something went wrong with the Boozer solve...")
+    if not success1:
+        raise RuntimeError("Boozer solver did not converge")
+    if not success2:
+        raise RuntimeError("Boozer surface is self-intersecting")
 
     return boozer_surface
