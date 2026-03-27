@@ -15,24 +15,24 @@ __all__ = ['CurrentPenalty']
 
 class CurrentPenalty(Optimizable):
     """
-    Penalize currents above a threshold using a one-sided quadratic penalty:
+    Penalize coil currents using a global p-norm of the absolute current vector:
 
-        J = sum_i (max(0, I_i - I_threshold) / I_threshold)^2
-    
-    We normalize the penalty by the current threshold to ensure that the penalty is a reasonable
-    magnitude for the current optimization.
+        J = (sum_i |I_i|^p)^(1/p)
+
+    This objective is smooth for p > 1 and serves as a differentiable proxy for
+    the maximum current (as p increases, the p-norm approaches max_i |I_i|).
     """
 
-    def __init__(self, currents, current_threshold):
+    def __init__(self, currents, p=2.0):
         super().__init__(depends_on=currents)
         self.currents = list(currents)
-        self.current_threshold = float(current_threshold)
+        self.p = float(p)
+        if not np.isfinite(self.p) or self.p <= 1.0:
+            raise ValueError("CurrentPenalty requires p > 1 for a well-behaved gradient.")
 
         def _penalty(currents_vec):
             abs_currents = jnp.abs(currents_vec)
-            excess = jnp.maximum(0.0, abs_currents - self.current_threshold)
-            normalized = excess / self.current_threshold
-            return jnp.sum(normalized ** 2)
+            return jnp.power(jnp.sum(jnp.power(abs_currents, self.p)), 1.0 / self.p)
 
         self._jax_penalty = _penalty
         self._jax_grad = jax.grad(_penalty)

@@ -467,7 +467,7 @@ iota = Iotas(boozer_surface)
 Jiota = QuadraticPenalty(iota, IOTA_TARGET)
 JnonQSRatio = sum(nonQSs)
 JBoozerResidual = sum(brs)
-Jcurrent = CurrentPenalty([c.current for c in dipole_coils], CURRENT_THRESHOLD)
+Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=10.0)
 
 # Combined objective function
 JF = JBoozerResidual + QS_WEIGHT * JnonQSRatio + IOTA_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
@@ -499,7 +499,7 @@ run_dict = {
 # Python BFGS uses numpy's own BLAS (OpenBLAS) and is unaffected.
 # With 84 DOFs the full Hessian approximation is negligible in memory.
 # We only use gtol here because BFGS primarily uses gradient information.
-res = minimize(fun, dofs, jac=True, method='CG',
+res = minimize(fun, dofs, jac=True, method='BFGS',
             callback=callback,
             options={'maxiter': MAXITER, 'gtol': gtol_by_mpol.get(mpol)})
 print(res.message)
