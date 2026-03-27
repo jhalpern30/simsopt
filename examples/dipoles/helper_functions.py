@@ -185,14 +185,15 @@ def generate_tf_array(winding_surface, ntf, TF_R0, TF_a, TF_b, TF_current, fixed
         base_tf_coils = [CircularRegularizedCoil(curve, Current(TF_current), tf_coil_radius) for curve in base_tf_curves]
     return base_tf_curves, base_tf_coils
 
-def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False, wp_coil_radius=0.0):
+def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, half_per_spacing, wp_n, numquadpoints=32, order=12, verbose=False, wp_coil_radius=0.0, nwps_poloidal_target=None, nwps_toroidal_target=None):
     """
     Initialize an array of nwps_poloidal x nwps_toroidal planar windowpane coils on a winding surface
     Coils are initialized with a current of 1 in order to simplify the logic in the precomputed section
     Parameters:
         winding_surface: surface upon which to place the coils, with coil plane locally tangent to the surface normal
                          assumed to be an elliptical cross section
-        inboard_radius: radius of dipoles at inboard midplane - constant poloidally, will increase toroidally
+        inboard_radius: radius of dipoles at inboard midplane - constant poloidally, will increase toroidally.
+                        Pass None when using nwps_poloidal_target/nwps_toroidal_target instead.
         wp_fil_spacing: spacing wp filaments
         half_per_spacing: spacing between half period segments
         wp_n: value of n for superellipse, see https://en.wikipedia.org/wiki/Superellipse
@@ -200,6 +201,8 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
         order: number of Fourier moments for the planar coil representation, 0 = circle 
                (see CurvePlanarFourier documentation), more for ellipse approximation
         wp_coil_radius: if set, initialize coils as CircularRegularizedCoil with this radius
+        nwps_poloidal_target: if set, use this fixed poloidal coil count instead of deriving from inboard_radius
+        nwps_toroidal_target: if set, use this fixed toroidal coil count instead of deriving from inboard_radius
     Returns:
         base_wp_coils: list of initialized coils (half field period)
     """    
@@ -208,15 +211,20 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
     VV_b = winding_surface.get_zs(1,0)
     VV_R0 = winding_surface.get_rc(0,0)
     arc_length = 4 * VV_a * ellipe(1-(VV_b/VV_a)**2)
-    nwps_poloidal = int(arc_length / (2 * inboard_radius + wp_fil_spacing)) # figure out how many poloidal dipoles can fit for target radius
-    Rpol = arc_length / 2 / nwps_poloidal - wp_fil_spacing / 2 # adjust the poloidal length based off npol to fix filament distance
+    if nwps_poloidal_target is not None and nwps_toroidal_target is not None:
+        nwps_poloidal = nwps_poloidal_target
+        nwps_toroidal = nwps_toroidal_target
+    elif inboard_radius is not None:
+        nwps_poloidal = int(arc_length / (2 * inboard_radius + wp_fil_spacing))
+        nwps_toroidal = int((np.pi/winding_surface.nfp*(VV_R0 - VV_a) - half_per_spacing + wp_fil_spacing) / (2 * inboard_radius + wp_fil_spacing))
+    else:
+        raise ValueError("Must provide either inboard_radius or both nwps_poloidal_target and nwps_toroidal_target")
+    Rpol = arc_length / 2 / nwps_poloidal - wp_fil_spacing / 2
     # TODO: make this even more exact. Right now, find evenly spaced theta locations in arc length, and make that center of coil
     # but this doesn't account for difference in arc length on either side of the center of the coil. Ideally, figure out how many
     # can fit, their radius, then figure out a way to find the theta location which keeps filament distance constant
     theta_locs = generate_even_arc_angles(VV_a, VV_b, nwps_poloidal)
     #theta_locs += (theta_locs[1] - theta_locs[0]) / 2 # shift by half the angle spacing to open spacing at theta = 0
-    # pi/nfp*(R0-a) = (ntor - 1)(2Rtor + fil_spacing) + 2Rtor + half_per_spacing
-    nwps_toroidal = int((np.pi/winding_surface.nfp*(VV_R0 - VV_a) - half_per_spacing + wp_fil_spacing) / (2 * inboard_radius + wp_fil_spacing))
     if verbose:
         print(f'     Number of Toroidal Dipoles: {nwps_toroidal}')
         print(f'     Number of Poroidal Dipoles: {nwps_poloidal}')

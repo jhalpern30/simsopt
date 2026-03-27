@@ -1,0 +1,12 @@
+---
+description: Preserve existing code comments during edits
+alwaysApply: true
+---
+
+# Preserve Existing Comments
+
+- Do not remove, shorten, or rewrite existing code comments unless the user explicitly asks for comment cleanup.
+- When editing code blocks, retain nearby comments and docstrings even if they are not directly related to the change.
+- Prefer minimal, targeted edits over full-block rewrites to avoid accidental comment loss.
+- If a comment is clearly incorrect because of the code change, update the comment in place instead of deleting it.
+- If a large refactor makes comment preservation difficult, pause and ask before removing comment context.

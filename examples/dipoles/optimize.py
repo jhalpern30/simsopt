@@ -32,6 +32,8 @@ def optimize(
     CC_WEIGHT=None,
     CS_THRESHOLD=None,
     CS_WEIGHT=None,
+    wp_npol_target=None,
+    wp_ntor_target=None,
 ):
     
     # Create plot configuration
@@ -115,6 +117,8 @@ def optimize(
         order=12,
         verbose=verbose,
         wp_coil_radius=wp_coil_radius,
+        nwps_poloidal_target=wp_npol_target,
+        nwps_toroidal_target=wp_ntor_target,
     )
     print(f"Initialized {nwps_poloidal}x{nwps_toroidal} (npol x ntor) windowpane coils with Rpol={Rpol:.3f}, Rtor_min={Rtor_min:.3f}, Rtor_max={Rtor_max:.3f}")
     nwptot = nwps_poloidal * nwps_toroidal * 2 * surf.nfp
@@ -259,7 +263,7 @@ def optimize(
         "final_squared_flux": Jf.J(),
         "avg_Bnormal": mean_abs_relBfinal_norm,
         "max_Bnormal": max_relBfinal_norm,
-        "peak_wp_field": np.max(np.abs(np.array(wp_currents))) * mu0 / 2 / dipole_radius,
+        "peak_wp_field": np.max(np.abs(np.array(wp_currents))) * mu0 / 2 / (dipole_radius if dipole_radius is not None else Rtor_min),
         "MA_meters": get_total_amp_meters(base_tf_coils, base_wp_coils, VV) / 1e6,
         "maxR0": np.max(R0s) if R0s is not None else None,
         "minR0": np.min(R0s) if R0s is not None else None,
