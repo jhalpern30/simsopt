@@ -152,7 +152,13 @@ def fun(x):
         boozer_surface.res['G'] = run_dict['G']
 
     print(f"Objective J: {J:.6e}, ||∇J||: {np.linalg.norm(dJ):.6e}")
-    print(f"Individual scaled terms -- Boozer: {JBoozerResidual.J():.6e}, QS: {QS_WEIGHT * JnonQSRatio.J():.6e}, iota: {IOTA_WEIGHT * Jiota.J():.6e}, current: {CURRENT_WEIGHT * Jcurrent.J():.6e}")
+    print(
+        "Individual scaled terms -- "
+        f"Boozer: {JBoozerResidual.J():.6e}, "
+        f"QS_guard: {QS_WEIGHT * JQSGuard.J():.6e}, "
+        f"iota: {IOTA_WEIGHT * Jiota.J():.6e}, "
+        f"current: {CURRENT_WEIGHT * Jcurrent.J():.6e}"
+    )
     return J, dJ
 
 def callback(x):
@@ -183,6 +189,7 @@ def callback(x):
 
     J_QS = JnonQSRatio.J()
     dJ_QS = np.linalg.norm(JnonQSRatio.dJ())
+    J_QS_guard = JQSGuard.J()
     J_Boozer = JBoozerResidual.J()
     dJ_Boozer = np.linalg.norm(JBoozerResidual.dJ())
     J_iota = Jiota.J()
@@ -237,7 +244,8 @@ def callback(x):
             },
             "targets": {
                 "IOTA_TARGET": IOTA_TARGET,
-                "CURRENT_THRESHOLD": CURRENT_THRESHOLD,
+                "QS_RATIO_INITIAL": QS_RATIO_INITIAL,
+                "QS_RATIO_MAX": QS_RATIO_MAX,
             },
             "tolerances": {
                 "gtol": gtol_by_mpol.get(mpol),
@@ -251,10 +259,11 @@ def callback(x):
         "J": float(J),
         "grad_norm": float(np.linalg.norm(grad)),
         "J_nonQS": float(J_QS),
+        "J_nonQS_guard": float(J_QS_guard),
         "J_Boozer": float(J_Boozer),
         "J_iota": float(J_iota),
         "J_current": float(J_curr),
-        "J_nonQS_scaled": float(QS_WEIGHT * J_QS),
+        "J_nonQS_guard_scaled": float(QS_WEIGHT * J_QS_guard),
         "J_iota_scaled": float(IOTA_WEIGHT * J_iota),
         "J_current_scaled": float(CURRENT_WEIGHT * J_curr),
         "iota": float(iota.J()),
@@ -431,25 +440,6 @@ boozer_surface = initialize_boozer_surface(surf, mpol, ntor, bs, VOL_TARGET, CON
 print(f"Initial boozer surface volume: {boozer_surface.surface.volume()}")
 
 # ==============================================================================
-# SAVE INITIAL STATE
-# ==============================================================================
-# Not saving anything for now - takes up a lot of space, and can be obtained from the stage 2 run
-# # Save initial coil configurations
-# coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_init", close=True)
-# bs.save(OUT_DIR_ITER + f"/bs_init.json")
-
-# # Save initial surface with magnetic field normal component data
-# pointData = {"B_N/B": np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3)) *
-#     boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3))**2, axis=2))[:, :, None]}
-# boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_init", extra_data=pointData)
-# boozer_surface.surface.save(OUT_DIR_ITER + f"/surf_init.json")
-
-# # Generate initial diagnostic plots
-# plot_relBfinal_norm_modB(bs, boozer_surface.surface, OUT_DIR_ITER, "initial", plot_config)
-# plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "initial", plot_config)
-# plot_coil_currents_on_theta_phi_grid(dipole_coils, VV, OUT_DIR_ITER, "initial", plot_config)
-
-# ==============================================================================
 # DEFINE OBJECTIVE FUNCTION COMPONENTS
 # ==============================================================================
 # Biot-Savart field calculation
@@ -463,14 +453,24 @@ else:
     brs = [BoozerResidual(boozer_surface, bs_obj)]
 
 # Individual objective terms
+# Get iota to iota target
 iota = Iotas(boozer_surface)
 Jiota = QuadraticPenalty(iota, IOTA_TARGET)
+
+# Keep non-QS ratio to less than 1.05 times the initial non-QS ratio
 JnonQSRatio = sum(nonQSs)
+QS_RATIO_INITIAL = float(JnonQSRatio.J())
+QS_RATIO_MAX = 1.05 * QS_RATIO_INITIAL
+JQSGuard = QuadraticPenalty(JnonQSRatio, QS_RATIO_MAX, f="max")
+
+# Get boozer residual to 0
 JBoozerResidual = sum(brs)
-Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=10.0)
+
+# Penalize the p-norm of the total current vector
+Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=12.0)
 
 # Combined objective function
-JF = JBoozerResidual + QS_WEIGHT * JnonQSRatio + IOTA_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
+JF = JBoozerResidual + QS_WEIGHT * JQSGuard + IOTA_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
 
 # Extract degrees of freedom
 dofs = JF.x
