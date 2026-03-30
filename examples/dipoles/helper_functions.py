@@ -202,7 +202,9 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
                (see CurvePlanarFourier documentation), more for ellipse approximation
         wp_coil_radius: if set, initialize coils as CircularRegularizedCoil with this radius
         nwps_poloidal_target: if set, use this fixed poloidal coil count instead of deriving from inboard_radius
-        nwps_toroidal_target: if set, use this fixed toroidal coil count instead of deriving from inboard_radius
+        nwps_toroidal_target: if set, use this fixed toroidal coil count instead of deriving from inboard_radius.
+                              May also be used together with inboard_radius to override only the toroidal count
+                              while the poloidal count is still derived from the ellipse perimeter.
     Returns:
         base_wp_coils: list of initialized coils (half field period)
     """    
@@ -216,7 +218,10 @@ def generate_windowpane_array(winding_surface, inboard_radius, wp_fil_spacing, h
         nwps_toroidal = nwps_toroidal_target
     elif inboard_radius is not None:
         nwps_poloidal = int(arc_length / (2 * inboard_radius + wp_fil_spacing))
-        nwps_toroidal = int((np.pi/winding_surface.nfp*(VV_R0 - VV_a) - half_per_spacing + wp_fil_spacing) / (2 * inboard_radius + wp_fil_spacing))
+        if nwps_toroidal_target is not None:
+            nwps_toroidal = int(nwps_toroidal_target)
+        else:
+            nwps_toroidal = int((np.pi/winding_surface.nfp*(VV_R0 - VV_a) - half_per_spacing + wp_fil_spacing) / (2 * inboard_radius + wp_fil_spacing))
     else:
         raise ValueError("Must provide either inboard_radius or both nwps_poloidal_target and nwps_toroidal_target")
     Rpol = arc_length / 2 / nwps_poloidal - wp_fil_spacing / 2
@@ -649,7 +654,7 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
     plt.close()
     return relBfinal_norm, mean_abs_relBfinal_norm, np.max(relBfinal_norm)
 
-def plot_cross_section(surf, VV, output_dir, label, plot_config):
+def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coils=None):
     """
     Plots cross section of plasma and vacuum vessel at a few toroidal locations.
     
@@ -659,6 +664,8 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config):
         output_dir (str): Directory to save plot
         label (str): Label for the plot title and filename
         plot_config (PlotConfig): Plot formatting configuration
+        base_dipole_coils (list, optional): Base dipole coils in one half period.
+            If provided, their R-Z cross-sections are overlaid.
     """
     plt.figure(figsize=(7,6))
     phi_array = np.linspace(0, 0.5 / surf.nfp, 6, endpoint=True) # scaled from 0 to 1
@@ -672,6 +679,12 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config):
         plt.plot(rs, zs)
         plt.plot(rs2, zs2, 'k')
         plt.plot(np.mean(rs), np.mean(zs), 'kx')
+    if base_dipole_coils:
+        for coil in base_dipole_coils:
+            gamma = coil.curve.gamma()
+            r_coil = np.sqrt(gamma[:, 0]**2 + gamma[:, 1]**2)
+            z_coil = gamma[:, 2]
+            plt.plot(r_coil, z_coil, c='tab:orange', alpha=0.9)
     plt.xlabel('R [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
     plt.ylabel('Z [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
     plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)
