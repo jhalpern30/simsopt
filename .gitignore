@@ -72,3 +72,5 @@ src/simsopt/_version.py
 
 examples/outputs/*
 examples/single_stage_scans*
+examples/tradeoff_scans*
+examples/slurm_outputs*

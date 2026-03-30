@@ -50,16 +50,31 @@ parser.add_argument(
     help="Weight for the quasi-symmetry (nonQS ratio) term.",
 )
 parser.add_argument(
-    "--current-threshold",
+    "--qs-target",
     type=float,
-    default=200000.0,
-    help="Current threshold for the current penalty term [A].",
+    default=1e-3,
+    help="Target upper bound for nonQS ratio (penalize only when nonQS exceeds this value).",
 )
 parser.add_argument(
-    "--current-weight",
+    "--qs-rel-tol",
     type=float,
-    default=1.0,
-    help="Weight for the current penalty term.",
+    default=0.10,
+    help="Relative QS tolerance used to normalize the QS penalty around qs-target (default: 0.10 = 10%%).",
+)
+parser.add_argument(
+    "--iota-rel-tol",
+    type=float,
+    default=0.01,
+    help="Relative iota tolerance used to normalize the iota penalty (default: 0.005 = 0.5%%).",
+)
+# Comma-separated continuation schedule for current weights.
+# If provided, the optimization will run a warm-started continuation loop over
+# these weights, producing one solution per weight.
+parser.add_argument(
+    "--current-weight-schedule",
+    type=str,
+    default="1",
+    help="Comma-separated list of current weights for continuation (default: '0.1,0.3,1').",
 )
 
 # Allow unknown args so this script can coexist with external launchers that add flags
@@ -70,12 +85,24 @@ INIT_DIR = _args.init_dir
 IOTA_TARGET = _args.iota_target
 IOTA_WEIGHT = _args.iota_weight
 QS_WEIGHT = _args.qs_weight
-CURRENT_THRESHOLD = _args.current_threshold
-CURRENT_WEIGHT = _args.current_weight
+QS_TARGET = _args.qs_target
+QS_REL_TOL = _args.qs_rel_tol
+IOTA_REL_TOL = _args.iota_rel_tol
+CURRENT_WEIGHT_SCHEDULE = [
+    float(x) for x in _args.current_weight_schedule.split(",") if x.strip() != ""
+]
+if not CURRENT_WEIGHT_SCHEDULE:
+    raise ValueError("current-weight-schedule must contain at least one value.")
+if IOTA_REL_TOL <= 0:
+    raise ValueError("iota-rel-tol must be > 0.")
+if QS_TARGET <= 0:
+    raise ValueError("qs-target must be > 0.")
+if QS_REL_TOL <= 0:
+    raise ValueError("qs-rel-tol must be > 0.")
 
 # Other parameters that are not set from the command line
 CONSTRAINT_WEIGHT = 1.0
-MAXITER = 75
+MAXITER = 120
 
 # Create plot configuration
 plot_config = PlotConfig(
@@ -86,6 +113,64 @@ plot_config = PlotConfig(
     ticklabelfontsize=14,
     cbarfontsize=16
 )
+
+
+def plot_objective_vs_iterations(out_dir, r0, i0, current_weight, qs_weight, iota_weight, config):
+    """
+    Plot total objective J and each scaled term vs accepted iteration using iterations.json.
+
+    Scaling matches JF = (1/r0)*JBoozer + (current_weight/i0)*Jcurrent
+    + qs_weight*JQSGuard + iota_weight*Jiota.
+    """
+    history_path = os.path.join(out_dir, "iterations.json")
+    if not os.path.isfile(history_path):
+        return
+    with open(history_path, "r") as f:
+        history = json.load(f)
+    rows = history.get("iterations") or []
+    if len(rows) < 1:
+        return
+
+    it = np.array([r["iteration"] for r in rows], dtype=float)
+    J_tot = np.array([r["J"] for r in rows], dtype=float)
+    J_boozer = np.array([r["J_Boozer"] for r in rows], dtype=float) / r0
+    J_qs = np.array([r["J_nonQS_guard"] for r in rows], dtype=float) * qs_weight
+    J_iota = np.array([r["J_iota"] for r in rows], dtype=float) * iota_weight
+    J_current = np.array([r["J_current"] for r in rows], dtype=float) * (current_weight / i0)
+    grad_norm = np.array([r["grad_norm"] for r in rows], dtype=float)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2,
+        1,
+        sharex=True,
+        figsize=(10, 8),
+        constrained_layout=True,
+    )
+    ax1.plot(it, J_tot, color="k", lw=2.0, label=r"$J$ (total)")
+    ax1.plot(it, J_boozer, label=r"$(1/R_0)\,J_{\mathrm{Boozer}}$")
+    ax1.plot(it, J_qs, label=r"$w_{\mathrm{QS}} J_{\mathrm{QS\,guard}}$")
+    ax1.plot(it, J_iota, label=r"$w_{\iota} J_{\iota}$")
+    ax1.plot(it, J_current, label=r"$(w_I/I_0)\,J_{\mathrm{current}}$")
+    ax1.set_ylabel("Contribution to $J$", fontsize=config.axisfontsize)
+    ax1.set_title("Objective and components vs iteration", fontsize=config.titlefontsize)
+    ax1.legend(fontsize=config.legendfontsize, loc="best")
+    ax1.grid(True, which="both", alpha=0.3)
+    ax1.tick_params(labelsize=config.ticklabelfontsize)
+    # Symlog handles wide range (e.g. early J ~ 1e3, late subterms ~ 1e-6) and exact zeros in QS guard.
+    ax1.set_yscale("symlog", linthresh=1e-4)
+
+    ax2.plot(it, grad_norm, color="C5", lw=1.5)
+    ax2.set_ylabel(r"$\|\nabla J\|_2$", fontsize=config.axisfontsize)
+    ax2.set_xlabel("Iteration (accepted)", fontsize=config.axisfontsize)
+    ax2.grid(True, which="both", alpha=0.3)
+    ax2.tick_params(labelsize=config.ticklabelfontsize)
+    ax2.set_yscale("symlog", linthresh=1e-3)
+
+    out_path = os.path.join(out_dir, "objective_vs_iteration.png")
+    fig.savefig(out_path, dpi=config.dpi)
+    plt.close(fig)
+    print(f"Saved objective history plot to {out_path}")
+
 
 def fun(x):
     """
@@ -154,10 +239,10 @@ def fun(x):
     print(f"Objective J: {J:.6e}, ||∇J||: {np.linalg.norm(dJ):.6e}")
     print(
         "Individual scaled terms -- "
-        f"Boozer: {JBoozerResidual.J():.6e}, "
+        f"Boozer: {(1.0 / R0) * JBoozerResidual.J():.6e}, "
         f"QS_guard: {QS_WEIGHT * JQSGuard.J():.6e}, "
         f"iota: {IOTA_WEIGHT * Jiota.J():.6e}, "
-        f"current: {CURRENT_WEIGHT * Jcurrent.J():.6e}"
+        f"current: {(CURRENT_WEIGHT / I0) * Jcurrent.J():.6e}"
     )
     return J, dJ
 
@@ -205,7 +290,6 @@ def callback(x):
     BdotN = np.mean(np.abs(np.sum(bs.B().reshape((nphi, ntheta, 3)) * boozer_surface.surface.unitnormal(), axis=2)))
 
     currents = np.array([abs(c.current.get_value()) for c in dipole_coils])
-    num_over = np.sum(currents > CURRENT_THRESHOLD)
     max_current = np.max(currents)
 
     width = 35
@@ -222,7 +306,6 @@ def callback(x):
     print(f"{'Volume':{width}} = {volume_str}", file=buffer)
     print(f"{'⟨|B·n|⟩':{width}} = {BdotN:.6e}", file=buffer)
     print(f"{'Max current':{width}} = {max_current:.2f} A", file=buffer)
-    print(f"{'# currents over threshold':{width}} = {num_over}", file=buffer)
     print("="*70, file=buffer)
 
     output_str = buffer.getvalue()
@@ -245,10 +328,14 @@ def callback(x):
             "targets": {
                 "IOTA_TARGET": IOTA_TARGET,
                 "QS_RATIO_INITIAL": QS_RATIO_INITIAL,
-                "QS_RATIO_MAX": QS_RATIO_MAX,
+                "QS_RATIO_TARGET": QS_TARGET,
             },
             "tolerances": {
                 "gtol": gtol_by_mpol.get(mpol),
+                "iota_rel_tol": IOTA_REL_TOL,
+                "iota_scale": iota_scale,
+                "qs_rel_tol": QS_REL_TOL,
+                "qs_scale": qs_scale,
             },
             "max_iterations": MAXITER,
             "iterations": [],
@@ -270,7 +357,6 @@ def callback(x):
         "volume": float(boozer_surface.surface.volume()),
         "BdotN": float(BdotN),
         "max_current": float(max_current),
-        "num_currents_over_threshold": int(num_over),
     }
 
     history["iterations"].append(iter_record)
@@ -289,7 +375,6 @@ def callback(x):
         "iota_target": IOTA_TARGET,
         "qs_weight": QS_WEIGHT,
         "iota_weight": IOTA_WEIGHT,
-        "current_threshold": CURRENT_THRESHOLD,
         "current_weight": CURRENT_WEIGHT,
         # Convergence tolerances used
         "gtol": gtol_by_mpol.get(mpol),
@@ -305,7 +390,6 @@ def callback(x):
         "iota_penalty": float(Jiota.J()),
         "current_penalty": float(Jcurrent.J()),
         "max_current": float(max_current),
-        "num_currents_over_threshold": int(num_over),
         # Coil information
         "# TF coils": len(tf_coils),
         "# dipole coils": len(dipole_coils),
@@ -337,27 +421,15 @@ mpol = 6
 ntor = 6
 
 # EMPIRICAL convergence tolerances for different mpol values
-gtol_by_mpol = {6: 1e-8, 8: 1e-8, 10: 5e-9, 12: 1e-9}
+gtol_by_mpol = {6: 1e-2, 8: 1e-8, 10: 5e-9, 12: 1e-9}
 
 # Output directory setup
 eq_name = results["eq_name"]
-OUT_ROOT = f"../single_stage_scans_no_sparsity_cp_fix/{eq_name}"
+OUT_ROOT = os.path.join("..", "single_stage_scans_no_sparsity_epsilon_constraint", f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}", f"iota_tar{IOTA_TARGET:g}")
 os.makedirs(OUT_ROOT, exist_ok=True)
 
-# Determine root from unique time
-current_time = time.strftime("%y%m%d_%H%M%S")
-run_meta = (
-    f"iota_tar{IOTA_TARGET:g}"
-    f"_weight{IOTA_WEIGHT:g}"
-    f"_qs_weight{QS_WEIGHT:g}"
-    f"_cur_tar{CURRENT_THRESHOLD:g}"
-    f"_weight{CURRENT_WEIGHT:g}"
-)
-OUT_DIR_RUN = os.path.join(OUT_ROOT, f"{current_time}_{run_meta}")
-os.makedirs(OUT_DIR_RUN, exist_ok=True)
-
 # Send this to terminal/slurm output
-print(f"Output directory: {OUT_DIR_RUN}")
+print(f"Output directory root: {OUT_ROOT}")
 
 boozer_type = {'initial': 'least_squares', 'final': 'exact'}  # example
 stage = 'initial'  # or 'final', depending on what you want
@@ -405,33 +477,16 @@ dipole_curves = [c.curve for c in dipole_coils]
 # Just triple make sure they're fixed
 for c in dipole_curves:
     c.fix_all()
+for c in tf_coils:
+    c.current.fix_all()
 
 # ==============================================================================
 # BEGIN SINGLE STAGE OPTIMIZATION
 # ==============================================================================
-# Within each run, create a subfolder for the specific (mpol, ntor) resolution
-OUT_DIR_ITER = os.path.join(OUT_DIR_RUN, f"mpol{mpol}_ntor{ntor}")
-os.makedirs(OUT_DIR_ITER, exist_ok=True)
-
-# Redirect all standard output and errors to a log file in OUT_DIR_ITER
-log_path = os.path.join(OUT_DIR_ITER, "log.txt")
-log_file = open(log_path, "a", buffering=1)
-sys.stdout = log_file
-sys.stderr = log_file
-
-start_time = time.time()
-print(f"Timer started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
-
-print(f"\n===== Starting single stage optimization for mpol = {mpol} and ntor = {ntor} =====")
-print(f"# of TF coils: {len(tf_coils)}")
-print(f"# of Dipole coils: {len(dipole_coils)}")
-print("Starting equilibrium = ", eq_name)
-print(f"Target volume: {VOL_TARGET}")
-print(f"Target iota: {IOTA_TARGET}")
-print(f"Target current threshold: {CURRENT_THRESHOLD}")
-print(f"Current weight: {CURRENT_WEIGHT}")
-print(f"QS (nonQS ratio) weight: {QS_WEIGHT}")
-print(f"Iota weight: {IOTA_WEIGHT}\n")
+# We run a warm-started continuation in CURRENT_WEIGHT_SCHEDULE. Each stage gets
+# its own output directory with the current weight and resolution encoded.
+_orig_stdout = sys.stdout
+_orig_stderr = sys.stderr
 
 # Initialize Boozer surface using the loaded in coils + surface
 current_sum = sum(abs(c.current.get_value()) for c in tf_coils)
@@ -452,149 +507,246 @@ if boozer_type[stage]=='exact':
 else:
     brs = [BoozerResidual(boozer_surface, bs_obj)]
 
-# Individual objective terms
-# Get iota to iota target
+# Individual (normalized) objective terms
+# Get iota to iota target with tolerance-normalized penalty.
 iota = Iotas(boozer_surface)
-Jiota = QuadraticPenalty(iota, IOTA_TARGET)
+Jiota_raw = QuadraticPenalty(iota, IOTA_TARGET)
+iota_scale = IOTA_REL_TOL * IOTA_TARGET
+Jiota = (1.0 / (iota_scale ** 2)) * Jiota_raw
 
-# Keep non-QS ratio to less than 1.05 times the initial non-QS ratio
+# Keep non-QS ratio below a user-specified target.
 JnonQSRatio = sum(nonQSs)
 QS_RATIO_INITIAL = float(JnonQSRatio.J())
-QS_RATIO_MAX = 1.05 * QS_RATIO_INITIAL
-JQSGuard = QuadraticPenalty(JnonQSRatio, QS_RATIO_MAX, f="max")
+JQSGuard_raw = QuadraticPenalty(JnonQSRatio, QS_TARGET, f="max")
+qs_scale = QS_REL_TOL * QS_TARGET
+JQSGuard = (1.0 / (qs_scale ** 2)) * JQSGuard_raw
 
-# Get boozer residual to 0
+# Boozer residual (field quality metric)
 JBoozerResidual = sum(brs)
 
-# Penalize the p-norm of the total current vector
-Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=12.0)
+# Penalize the p-norm of the total current vector (proxy for max current)
+CURRENT_P_NORM = 20.0
+Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=CURRENT_P_NORM)
 
-# Combined objective function
-JF = JBoozerResidual + QS_WEIGHT * JQSGuard + IOTA_WEIGHT * Jiota + CURRENT_WEIGHT * Jcurrent
+# --------------------------------------------------------------------------
+# Normalize Boozer residual and current objective by their initial values so
+# current-weight continuation has consistent meaning across runs.
+# --------------------------------------------------------------------------
+R0 = float(JBoozerResidual.J())
+I0 = float(Jcurrent.J())
+if not np.isfinite(R0) or R0 <= 0:
+    raise ValueError(f"Invalid initial Boozer residual for normalization: R0={R0}")
+if not np.isfinite(I0) or I0 <= 0:
+    raise ValueError(f"Invalid initial current objective for normalization: I0={I0}")
 
-# Extract degrees of freedom
-dofs = JF.x
-# ==============================================================================
-# INITIALIZE OPTIMIZATION STATE
-# ==============================================================================
-# Initialize run_dict after JF and boozer_surface are ready
-run_dict = {
-    'sdofs': boozer_surface.surface.x.copy(),
-    'iota': boozer_surface.res['iota'],
-    'G': boozer_surface.res['G'],
-    'J': JF.J(),
-    'dJ': JF.dJ().copy(),
-    'it': 1,
-    'lscount': 0,
-    'x_prev': dofs.copy(),
-    'failed_boozer_solves': 0,
-}
+print(
+    f"Initial nonQS ratio: {QS_RATIO_INITIAL:.6e} "
+    f"(target={QS_TARGET:.6e})"
+)
+print(f"Normalization: R0 (Boozer) = {R0:.6e}, I0 (p-norm current) = {I0:.6e}, p={CURRENT_P_NORM:g}")
+print(f"Iota tolerance normalization: rel_tol={IOTA_REL_TOL:.4g}, scale={iota_scale:.6e}")
+print(f"QS tolerance normalization: rel_tol={QS_REL_TOL:.4g}, scale={qs_scale:.6e}")
+print(f"Continuation current weights: {CURRENT_WEIGHT_SCHEDULE}")
 
-# ==============================================================================
-# RUN OPTIMIZATION
-# ==============================================================================
-# Use Python BFGS instead of Fortran L-BFGS-B: the simsoptpp C++ extension
-# dynamically loads Cray libsci which overwrites the ddot symbol used by
-# L-BFGS-B's Fortran code, causing a broken initial step (~1e10 * ||g||).
-# Python BFGS uses numpy's own BLAS (OpenBLAS) and is unaffected.
-# With 84 DOFs the full Hessian approximation is negligible in memory.
-# We only use gtol here because BFGS primarily uses gradient information.
-res = minimize(fun, dofs, jac=True, method='BFGS',
-            callback=callback,
-            options={'maxiter': MAXITER, 'gtol': gtol_by_mpol.get(mpol)})
-print(res.message)
+# --------------------------------------------------------------------------
+# Continuation loop (warm-start): one solution per current weight.
+# Output structure:
+#   ../single_stage_scans.../<eq_name>/iota_tarX/
+#       stage00_cw0.3/mpol6_ntor6/...
+#       stage01_cw1/mpol6_ntor6/...
+# --------------------------------------------------------------------------
+x0 = None
+for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
+    stage_tag = f"stage{stage_idx:02d}_cw{CURRENT_WEIGHT:g}"
+    OUT_DIR_STAGE = os.path.join(OUT_ROOT, stage_tag)
+    OUT_DIR_ITER = os.path.join(OUT_DIR_STAGE, f"mpol{mpol}_ntor{ntor}")
+    os.makedirs(OUT_DIR_ITER, exist_ok=True)
 
-# ==============================================================================
-# SAVE OPTIMIZED STATE AND PERFORM POSTPROCESSING
-# ==============================================================================
-# Save optimized coil configurations
-coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_opt", close=True)
-bs.save(OUT_DIR_ITER + "/bs_opt.json")
+    # Redirect stdout/stderr per stage to keep logs separate
+    log_path = os.path.join(OUT_DIR_ITER, "log.txt")
+    log_file = open(log_path, "a", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
 
-# Save vacuum vessel for visualization
-VV.to_vtk(os.path.join(OUT_DIR_ITER, "vacuum_vessel"))
+    plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "initial", plot_config, base_dipole_coils=dipole_coils)
 
-# Save optimized surface with magnetic field normal component data
-pointData = {"B_N/B": np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3)) *
-    boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3))**2, axis=2))[:, :, None]}
-boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_opt", extra_data=pointData)
-boozer_surface.surface.save(OUT_DIR_ITER + f"/surf_opt.json")
+    start_time = time.time()
+    print(f"\n===== Single-stage continuation: {stage_tag} =====")
+    print(f"Output directory: {OUT_DIR_ITER}")
+    print(f"# of TF coils: {len(tf_coils)}")
+    print(f"# of shaping coils: {len(dipole_coils)}")
+    print(f"Starting equilibrium = {eq_name}")
+    print(f"Resolution: mpol={mpol}, ntor={ntor}")
+    print(f"Target volume: {VOL_TARGET}")
+    print(f"Target iota: {IOTA_TARGET}")
+    print(f"QS guard: target nonQS <= {QS_TARGET:.6e}, scale={qs_scale:.6e} ({100*QS_REL_TOL:.2f}% rel)")
+    print(f"Iota target/tolerance: target={IOTA_TARGET:.6g}, scale={iota_scale:.6e} ({100*IOTA_REL_TOL:.2f}% rel)")
+    print(f"Weights: iota_weight={IOTA_WEIGHT:g}, qs_weight={QS_WEIGHT:g}, current_weight={CURRENT_WEIGHT:g}")
+    print(f"Normalized objective: (1/R0)*Boozer + (CURRENT_WEIGHT/I0)*Current + guards")
+    print(f"Normalization: R0={R0:.6e}, I0={I0:.6e}\n")
 
-# Print final results
-print("\n===== Final results =====\n")
-print(f"Boozer surface volume: {boozer_surface.surface.volume()}")
-print(f"Iota: {Iotas(boozer_surface).J()}")
-print(f"Max current: {np.max([abs(c.current.get_value()) for c in dipole_coils])} A")
-print(f"Number of currents over threshold: {np.sum([abs(c.current.get_value()) > CURRENT_THRESHOLD for c in dipole_coils])}")
-print(f"Non-QS ratio: {JnonQSRatio.J()}")
-print(f"Boozer residual: {JBoozerResidual.J()}")
-print(f"Iota penalty: {Jiota.J()}")
-print(f"Current penalty: {Jcurrent.J()}\n")
+    # Combined (normalized) objective function for this stage
+    JF = (1.0 / R0) * JBoozerResidual + (CURRENT_WEIGHT / I0) * Jcurrent + QS_WEIGHT * JQSGuard + IOTA_WEIGHT * Jiota
 
-# Generate final diagnostic plots
-plot_relBfinal_norm_modB(bs, boozer_surface.surface, OUT_DIR_ITER, "optimized", plot_config)
-plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "optimized", plot_config)
-plot_coil_currents_on_theta_phi_grid(dipole_coils, VV, OUT_DIR_ITER, "optimized", plot_config)
+    # Determine initial dofs for this stage
+    if x0 is None:
+        dofs = JF.x
+        x0 = dofs.copy()
+    else:
+        # Warm-start from the previous stage solution
+        x0 = np.asarray(x0, dtype=float)
 
-# Save results dictionary for reproducibility and downstream use
-results_output = {
-    # Stage 2 directory (in a \"graph\" sub-dict so postprocessing can parse init_id)
-    "graph": {
-        "init_dir": INIT_DIR,
-    },
+    # Initialize run_dict after JF and boozer_surface are ready
+    run_dict = {
+        'sdofs': boozer_surface.surface.x.copy(),
+        'iota': boozer_surface.res['iota'],
+        'G': boozer_surface.res['G'],
+        'J': JF.J(),
+        'dJ': JF.dJ().copy(),
+        'it': 1,
+        'lscount': 0,
+        'x_prev': x0.copy(),
+        'failed_boozer_solves': 0,
+        'stage_idx': int(stage_idx),
+        'current_weight': float(CURRENT_WEIGHT),
+        'R0': float(R0),
+        'I0': float(I0),
+    }
 
-    # Optimization configuration
-    "mpol": mpol,
-    "ntor": ntor,
-    "maxiter": MAXITER,
-    "constraint_weight": CONSTRAINT_WEIGHT,
-    "iota_target": IOTA_TARGET,
-    "qs_weight": QS_WEIGHT,
-    "iota_weight": IOTA_WEIGHT,
-    "current_threshold": CURRENT_THRESHOLD,
-    "current_weight": CURRENT_WEIGHT,
+    # Run optimization (BFGS)
+    res = minimize(
+        fun,
+        x0,
+        jac=True,
+        method='BFGS',
+        callback=callback,
+        options={'maxiter': MAXITER, 'gtol': gtol_by_mpol.get(mpol)},
+    )
+    print(res.message)
 
-    # Convergence tolerances used
-    "gtol": gtol_by_mpol.get(mpol),
+    # Warm start next stage from this solution
+    x0 = res.x.copy()
 
-    # Optimization results
-    "optimization_success": res.success,
-    "optimization_message": res.message,
-    "final_objective": JF.J(),
-    "final_iota": float(Iotas(boozer_surface).J()),
-    "final_volume": float(boozer_surface.surface.volume()),
+    # Save optimized coil configurations
+    coils_to_vtk(coils, filename=OUT_DIR_ITER + "/coils_opt", close=True)
+    bs.save(OUT_DIR_ITER + "/bs_opt.json")
 
-    # Diagnostic metrics
-    "nonQS_ratio": float(JnonQSRatio.J()),
-    "boozer_residual": float(JBoozerResidual.J()),
-    "iota_penalty": float(Jiota.J()),
-    "current_penalty": float(Jcurrent.J()),
-    "max_current": float(np.max([abs(c.current.get_value()) for c in dipole_coils])),
-    "num_currents_over_threshold": int(np.sum([abs(c.current.get_value()) > CURRENT_THRESHOLD for c in dipole_coils])),
+    # Save vacuum vessel for visualization
+    VV.to_vtk(os.path.join(OUT_DIR_ITER, "vacuum_vessel"))
 
-    # Coil information
-    "# TF coils": len(tf_coils),
-    "# dipole coils": len(dipole_coils),
+    # Save optimized surface with magnetic field normal component data
+    pointData = {"B_N/B": np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3)) *
+        boozer_surface.surface.unitnormal(), axis=2)[:, :, None] / np.sqrt(np.sum(bs.B().reshape((plas_nPhi, plas_nTheta, 3))**2, axis=2))[:, :, None]}
+    boozer_surface.surface.to_vtk(OUT_DIR_ITER + f"/surf_opt", extra_data=pointData)
+    boozer_surface.surface.save(OUT_DIR_ITER + f"/surf_opt.json")
 
-    # Inherited from stage 2
-    "eq_name": results["eq_name"],
-    "eq_dir": results["eq_dir"],
-    "surf_nfp": results["surf_nfp"],
-    "surf_s": results["surf_s"],
-    "VV_R0": results["VV_R0"],
-    "VV_a": results["VV_a"],
-    "VV_b": results["VV_b"],
-    "ntf": results["ntf"],
-}
+    # Compute final diagnostics
+    true_max_current = float(np.max([abs(c.current.get_value()) for c in dipole_coils]))
+    final_nonqs = float(JnonQSRatio.J())
+    final_boozer = float(JBoozerResidual.J())
 
-# Save to file
-save(results_output, os.path.join(OUT_DIR_ITER, "results.json"))
-print(f"Results saved to {os.path.join(OUT_DIR_ITER, 'results.json')}")
+    print("\n===== Final results (stage) =====\n")
+    print(f"Boozer surface volume: {boozer_surface.surface.volume()}")
+    print(f"Iota: {Iotas(boozer_surface).J()}")
+    print(f"Max current (true): {true_max_current:.6e} A")
+    print(f"nonQS ratio: {final_nonqs:.6e} (guard target {QS_TARGET:.6e})")
+    print(f"Boozer residual: {final_boozer:.6e} (normalized {final_boozer/R0:.6e})")
+    print(f"Iota penalty: {Jiota.J():.6e}")
+    print(f"Current objective (p-norm): {Jcurrent.J():.6e} A (normalized {Jcurrent.J()/I0:.6e})\n")
 
-# Print total wall time
-end_time = time.time()
-elapsed = end_time - start_time
-print(f"Total wall time: {elapsed/60:.2f} minutes ({elapsed:.1f} seconds)")
+    # Generate final diagnostic plots
+    plot_relBfinal_norm_modB(bs, boozer_surface.surface, OUT_DIR_ITER, "optimized", plot_config)
+    plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "optimized", plot_config, base_dipole_coils=dipole_coils)
+    plot_coil_currents_on_theta_phi_grid(dipole_coils, VV, OUT_DIR_ITER, "optimized", plot_config)
+    plot_objective_vs_iterations(OUT_ROOT,
+        OUT_DIR_ITER,
+        R0,
+        I0,
+        CURRENT_WEIGHT,
+        QS_WEIGHT,
+        IOTA_WEIGHT,
+        plot_config,
+    )
 
-# Close log file
-log_file.close()
+    # Save results dictionary for reproducibility and downstream use
+    results_output = {
+        # Stage 2 directory (in a "graph" sub-dict so postprocessing can parse init_id)
+        "graph": {
+            "init_dir": INIT_DIR,
+        },
+
+        # Continuation metadata
+        "continuation_stage": int(stage_idx),
+        "current_weight_schedule": [float(v) for v in CURRENT_WEIGHT_SCHEDULE],
+        "current_weight_stage": float(CURRENT_WEIGHT),
+
+        # Normalization metadata
+        "normalized_objective": True,
+        "R0_boozer_residual": float(R0),
+        "I0_current_pnorm": float(I0),
+        "current_pnorm": float(CURRENT_P_NORM),
+
+        # Optimization configuration
+        "mpol": mpol,
+        "ntor": ntor,
+        "maxiter": MAXITER,
+        "constraint_weight": CONSTRAINT_WEIGHT,
+        "iota_target": IOTA_TARGET,
+        "qs_weight": QS_WEIGHT,
+        "iota_weight": IOTA_WEIGHT,
+
+        # QS guard thresholds
+        "QS_RATIO_INITIAL": float(QS_RATIO_INITIAL),
+        "QS_RATIO_TARGET": float(QS_TARGET),
+        "iota_rel_tol": float(IOTA_REL_TOL),
+        "iota_scale": float(iota_scale),
+        "qs_rel_tol": float(QS_REL_TOL),
+        "qs_scale": float(qs_scale),
+
+        # Convergence tolerances used
+        "gtol": gtol_by_mpol.get(mpol),
+
+        # Optimization results
+        "optimization_success": bool(res.success),
+        "optimization_message": str(res.message),
+        "final_objective": float(JF.J()),
+        "final_iota": float(Iotas(boozer_surface).J()),
+        "final_volume": float(boozer_surface.surface.volume()),
+
+        # Diagnostic metrics
+        "nonQS_ratio": float(final_nonqs),
+        "boozer_residual": float(final_boozer),
+        "iota_penalty": float(Jiota.J()),
+        "current_pnorm": float(Jcurrent.J()),
+        "max_current": float(true_max_current),
+
+        # Coil information
+        "# TF coils": len(tf_coils),
+        "# dipole coils": len(dipole_coils),
+
+        # Inherited from stage 2
+        "eq_name": results["eq_name"],
+        "eq_dir": results["eq_dir"],
+        "surf_nfp": results["surf_nfp"],
+        "surf_s": results["surf_s"],
+        "VV_R0": results["VV_R0"],
+        "VV_a": results["VV_a"],
+        "VV_b": results["VV_b"],
+        "ntf": results["ntf"],
+    }
+
+    # Save to file
+    save(results_output, os.path.join(OUT_DIR_ITER, "results.json"))
+    print(f"Results saved to {os.path.join(OUT_DIR_ITER, 'results.json')}")
+
+    # Print total wall time for the stage
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Stage wall time: {elapsed/60:.2f} minutes ({elapsed:.1f} seconds)")
+
+    # Close log file and restore streams
+    log_file.close()
+    sys.stdout = _orig_stdout
+    sys.stderr = _orig_stderr
+
+print("All continuation stages completed.")
