@@ -4,6 +4,7 @@ import sys
 import json
 import argparse
 import time
+from datetime import datetime
 import numpy as np
 from scipy.optimize import minimize
 
@@ -102,7 +103,7 @@ if QS_REL_TOL <= 0:
 
 # Other parameters that are not set from the command line
 CONSTRAINT_WEIGHT = 1.0
-MAXITER = 120
+MAXITER = 100
 
 # Create plot configuration
 plot_config = PlotConfig(
@@ -428,6 +429,8 @@ eq_name = results["eq_name"]
 OUT_ROOT = os.path.join("..", "single_stage_scans_no_sparsity_epsilon_constraint", f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}", f"iota_tar{IOTA_TARGET:g}")
 os.makedirs(OUT_ROOT, exist_ok=True)
 
+print("Starting single-stage optimization on: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 # Send this to terminal/slurm output
 print(f"Output directory root: {OUT_ROOT}")
 
@@ -658,7 +661,7 @@ for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
     plot_relBfinal_norm_modB(bs, boozer_surface.surface, OUT_DIR_ITER, "optimized", plot_config)
     plot_cross_section(boozer_surface.surface, VV, OUT_DIR_ITER, "optimized", plot_config, base_dipole_coils=dipole_coils)
     plot_coil_currents_on_theta_phi_grid(dipole_coils, VV, OUT_DIR_ITER, "optimized", plot_config)
-    plot_objective_vs_iterations(OUT_ROOT,
+    plot_objective_vs_iterations(
         OUT_DIR_ITER,
         R0,
         I0,
