@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 from helper_functions import *
 from boozer_functions import *
 
+# Default Boozer volume target (also used for output path naming when unchanged).
+_DEFAULT_VOL_TARGET = 0.3
+
 # ==============================================================================
 # COMMAND-LINE INTERFACE
 # ==============================================================================
@@ -28,7 +31,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--init-dir",
     type=str,
-    default="../outputs/20260225_scans/wout_nfp22ginsburg_000_000281/01_ntf4_diprad_0.05_VVa_0.2455263272670667_VV_R0_1.037468882271737_ellipticalVV",
+    default="",
     help="Directory containing results from previous optimization (bs_opt.json, surf_opt.json, results.json).",
 )
 
@@ -41,19 +44,19 @@ parser.add_argument(
 parser.add_argument(
     "--iota-weight",
     type=float,
-    default=1e2,
+    default=1,
     help="Weight for the iota penalty term.",
 )
 parser.add_argument(
     "--qs-weight",
     type=float,
-    default=1e2,
+    default=1,
     help="Weight for the quasi-symmetry (nonQS ratio) term.",
 )
 parser.add_argument(
     "--qs-target",
     type=float,
-    default=1e-3,
+    default=5e-4,
     help="Target upper bound for nonQS ratio (penalize only when nonQS exceeds this value).",
 )
 parser.add_argument(
@@ -65,7 +68,7 @@ parser.add_argument(
 parser.add_argument(
     "--iota-rel-tol",
     type=float,
-    default=0.01,
+    default=0.05,
     help="Relative iota tolerance used to normalize the iota penalty (default: 0.005 = 0.5%%).",
 )
 # Comma-separated continuation schedule for current weights.
@@ -76,6 +79,13 @@ parser.add_argument(
     type=str,
     default="1",
     help="Comma-separated list of current weights for continuation (default: '0.1,0.3,1').",
+)
+parser.add_argument(
+    "--vol-target",
+    type=float,
+    default=_DEFAULT_VOL_TARGET,
+    help="Target plasma volume for Boozer surface initialization (default: 0.3). "
+    "If not the default, output uses an extra _vol<value> suffix on the iota_tar directory name.",
 )
 
 # Allow unknown args so this script can coexist with external launchers that add flags
@@ -92,6 +102,8 @@ IOTA_REL_TOL = _args.iota_rel_tol
 CURRENT_WEIGHT_SCHEDULE = [
     float(x) for x in _args.current_weight_schedule.split(",") if x.strip() != ""
 ]
+# Boozer surface volume target (previously fixed at 0.3 here).
+VOL_TARGET = _args.vol_target
 if not CURRENT_WEIGHT_SCHEDULE:
     raise ValueError("current-weight-schedule must contain at least one value.")
 if IOTA_REL_TOL <= 0:
@@ -100,10 +112,12 @@ if QS_TARGET <= 0:
     raise ValueError("qs-target must be > 0.")
 if QS_REL_TOL <= 0:
     raise ValueError("qs-rel-tol must be > 0.")
+if VOL_TARGET <= 0:
+    raise ValueError("vol-target must be > 0.")
 
 # Other parameters that are not set from the command line
 CONSTRAINT_WEIGHT = 1.0
-MAXITER = 100
+MAXITER = 150
 
 # Create plot configuration
 plot_config = PlotConfig(
@@ -332,7 +346,7 @@ def callback(x):
                 "QS_RATIO_TARGET": QS_TARGET,
             },
             "tolerances": {
-                "gtol": gtol_by_mpol.get(mpol),
+                "gtol": GTOL,
                 "iota_rel_tol": IOTA_REL_TOL,
                 "iota_scale": iota_scale,
                 "qs_rel_tol": QS_REL_TOL,
@@ -378,7 +392,7 @@ def callback(x):
         "iota_weight": IOTA_WEIGHT,
         "current_weight": CURRENT_WEIGHT,
         # Convergence tolerances used
-        "gtol": gtol_by_mpol.get(mpol),
+        "gtol": GTOL,
         # Optimization results (partial)
         "optimization_success": None,
         "optimization_message": "partial snapshot from callback",
@@ -422,11 +436,19 @@ mpol = 6
 ntor = 6
 
 # EMPIRICAL convergence tolerances for different mpol values
-gtol_by_mpol = {6: 1e-2, 8: 1e-8, 10: 5e-9, 12: 1e-9}
+GTOL = 1e-2
 
 # Output directory setup
 eq_name = results["eq_name"]
-OUT_ROOT = os.path.join("..", "single_stage_scans_no_sparsity_epsilon_constraint", f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}", f"iota_tar{IOTA_TARGET:g}")
+_iota_leaf = f"iota_tar{IOTA_TARGET:g}"
+if not np.isclose(VOL_TARGET, _DEFAULT_VOL_TARGET, rtol=0.0, atol=1e-15):
+    _iota_leaf = f"{_iota_leaf}_vol{VOL_TARGET:g}"
+OUT_ROOT = os.path.join(
+    "..",
+    "single_stage_scans_epsilon_constraint_updated",
+    f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}",
+    _iota_leaf,
+)
 os.makedirs(OUT_ROOT, exist_ok=True)
 
 print("Starting single-stage optimization on: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -466,7 +488,6 @@ else: # load and scale the surface from stage 2
         eq_name_full, s=results["surf_s"], range="half period", nphi=plas_nPhi, ntheta=plas_nTheta
     )
     surf.set_dofs(results["surf_dof_scale"] * surf.get_dofs())
-VOL_TARGET = 0.3 # surf.volume() # we'll assert that this is our target for now consistency
 
 # Extract coil information
 num_tf_coils = results["ntf"] * 2 * results["surf_nfp"]  # ntf is the number of TF coils per half-period, so this is the total number
@@ -528,7 +549,7 @@ JQSGuard = (1.0 / (qs_scale ** 2)) * JQSGuard_raw
 JBoozerResidual = sum(brs)
 
 # Penalize the p-norm of the total current vector (proxy for max current)
-CURRENT_P_NORM = 20.0
+CURRENT_P_NORM = 12.0
 Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=CURRENT_P_NORM)
 
 # --------------------------------------------------------------------------
@@ -554,7 +575,7 @@ print(f"Continuation current weights: {CURRENT_WEIGHT_SCHEDULE}")
 # --------------------------------------------------------------------------
 # Continuation loop (warm-start): one solution per current weight.
 # Output structure:
-#   ../single_stage_scans.../<eq_name>/iota_tarX/
+#   ../single_stage_scans.../<eq_name>/iota_tarX/   or iota_tarX_volY/ if vol-target != default
 #       stage00_cw0.3/mpol6_ntor6/...
 #       stage01_cw1/mpol6_ntor6/...
 # --------------------------------------------------------------------------
@@ -623,7 +644,7 @@ for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
         jac=True,
         method='BFGS',
         callback=callback,
-        options={'maxiter': MAXITER, 'gtol': gtol_by_mpol.get(mpol)},
+        options={'maxiter': MAXITER, 'gtol': GTOL},
     )
     print(res.message)
 
@@ -707,7 +728,7 @@ for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
         "qs_scale": float(qs_scale),
 
         # Convergence tolerances used
-        "gtol": gtol_by_mpol.get(mpol),
+        "gtol": GTOL,
 
         # Optimization results
         "optimization_success": bool(res.success),

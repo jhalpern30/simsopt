@@ -34,21 +34,20 @@ import sys
 # Epsilon-Constraint Sweep Configuration
 # ============================================================================
 # Iota targets: evenly spaced across the range of interest.
-# From existing random scans, the Pareto front spans roughly iota in [0.075, 0.135].
-IOTA_TARGETS = np.linspace(0.08, 0.14, 15)
+IOTA_TARGETS = np.linspace(0.10, 0.25, 16)
 
 # Continuation schedule of current weights (passed through to
 # single_stage_dipole_example.py as --current-weight-schedule).
-CURRENT_WEIGHT_SCHEDULE = [0.1, 0.3, 1.0]
+CURRENT_WEIGHT_SCHEDULE = [0.25, 0.5, 1.0, 2.0]
 
 # Fixed parameters (not swept):
 # High iota weight enforces the iota target as a near-hard constraint so that the
 # optimizer lands close to the prescribed iota value.
-IOTA_WEIGHT = 20.0
+IOTA_WEIGHT = 1.0
 
 # Moderate QS weight: slightly less than iota, but still enough to maintain
 # good quasi-symmetry to within the 5% increase threshold for the QS objective.
-QS_WEIGHT = 20.0
+QS_WEIGHT = 1.0
 
 def total_sweep_points():
     """Return the total number of sweep points (iota targets)."""
