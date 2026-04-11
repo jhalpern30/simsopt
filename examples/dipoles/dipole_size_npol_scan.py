@@ -58,7 +58,7 @@ TF_a = 0.4                # TF coil semi-axis a [m]
 ntor_wp = 8
 
 # Poloidal counts to scan
-npol_list = list(range(7, 17))
+npol_list = list(range(7, 15))
 
 # Plasma surface
 surf_s = 1.0

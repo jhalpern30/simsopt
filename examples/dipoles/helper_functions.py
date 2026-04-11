@@ -578,19 +578,25 @@ def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_conf
     currents = currents_phis_thetas[:, 0] / 1000
     phis = currents_phis_thetas[:, 1]
     thetas = np.mod(currents_phis_thetas[:, 2], 2 * np.pi)
+    # Stabilize branch-cut behavior: treat values numerically near 2*pi as 0.
+    theta_wrap_tol = 1e-3 * (2 * np.pi)
+    thetas = np.where(np.isclose(thetas, 2 * np.pi, atol=theta_wrap_tol, rtol=0.0), 0.0, thetas)
     vmax = np.max(np.abs(currents))  # Symmetric range
     norm = mcolors.Normalize(vmin=-vmax, vmax=vmax)
     cmap = plt.cm.seismic  # Diverging colormap (red-negative, blue-positive)
     colors = cmap(norm(currents))
     fig, ax = plt.subplots(figsize=(8,6))
-    scatter = ax.scatter(phis/(2*np.pi), thetas/(2*np.pi), edgecolors=colors, facecolors='none', s=200, linewidths=1.5)
+    theta_norm = thetas / (2 * np.pi)
+    theta_norm = np.clip(theta_norm, 0.0, 1.0)
+    theta_norm = np.where(np.isclose(theta_norm, 1.0, atol=1e-12, rtol=0.0), 0.0, theta_norm)
+    scatter = ax.scatter(phis/(2*np.pi), theta_norm, edgecolors=colors, facecolors='none', s=200, linewidths=1.5)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, ax=ax)
     cbar.ax.set_ylabel("WP Currents [kA]", fontsize=plot_config.cbarfontsize, fontweight='bold')
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
-    ax.set_ylim(-0.005, 1.005)
+    ax.set_ylim(-0.05, 0.95)
     ax.set_xlim(-0.005, 0.255) # hardcode nfp
     ax.set_title(f"Coil Currents on Winding Surface", fontsize=plot_config.titlefontsize, fontweight='bold')
     ax.grid(True, linestyle="--", alpha=0.6)
@@ -654,6 +660,48 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
     plt.close()
     return relBfinal_norm, mean_abs_relBfinal_norm, np.max(relBfinal_norm)
 
+def find_toroidal_plane_intersections(curve, phi_cut):
+    """
+    Find where a closed curve intersects the toroidal half-plane at angle phi_cut
+    (the half-plane containing the +Z axis and the ray at angle phi_cut in the
+    x-y plane).  Returns a list of (R, Z) tuples.
+
+    Uses the signed perpendicular distance from the half-plane,
+        d = y*cos(phi) - x*sin(phi),
+    and linearly interpolates between adjacent quadrature points where d
+    changes sign.  Also handles the case where a quadrature point sits
+    exactly on the plane (common due to coil symmetry at the midplane).
+    """
+    gamma = curve.gamma()
+    x, y, z = gamma[:, 0], gamma[:, 1], gamma[:, 2]
+
+    cos_phi = np.cos(phi_cut)
+    sin_phi = np.sin(phi_cut)
+    d = y * cos_phi - x * sin_phi
+
+    crossings = []
+    n = len(d)
+    eps = 1e-14
+    for i in range(n):
+        j = (i + 1) % n
+        if abs(d[i]) < eps:
+            # Quadrature point sits exactly on the toroidal plane
+            R = np.sqrt(x[i]**2 + y[i]**2)
+            if x[i] * cos_phi + y[i] * sin_phi > 0:
+                crossings.append((R, z[i]))
+        elif d[i] * d[j] < 0:
+            t = d[i] / (d[i] - d[j])
+            xi = x[i] + t * (x[j] - x[i])
+            yi = y[i] + t * (y[j] - y[i])
+            zi = z[i] + t * (z[j] - z[i])
+            R = np.sqrt(xi**2 + yi**2)
+            # Only keep crossings on the correct side of the Z-axis
+            if xi * cos_phi + yi * sin_phi > 0:
+                crossings.append((R, zi))
+
+    return crossings
+
+
 def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coils=None):
     """
     Plots cross section of plasma and vacuum vessel at a few toroidal locations.
@@ -665,7 +713,8 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coi
         label (str): Label for the plot title and filename
         plot_config (PlotConfig): Plot formatting configuration
         base_dipole_coils (list, optional): Base dipole coils in one half period.
-            If provided, their R-Z cross-sections are overlaid.
+            If provided, the R-Z intersection of each coil with its own center's
+            toroidal plane is overlaid as a line segment joining the two crossings.
     """
     plt.figure(figsize=(7,6))
     phi_array = np.linspace(0, 0.5 / surf.nfp, 6, endpoint=True) # scaled from 0 to 1
@@ -681,10 +730,18 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coi
         plt.plot(np.mean(rs), np.mean(zs), 'kx')
     if base_dipole_coils:
         for coil in base_dipole_coils:
-            gamma = coil.curve.gamma()
-            r_coil = np.sqrt(gamma[:, 0]**2 + gamma[:, 1]**2)
-            z_coil = gamma[:, 2]
-            plt.plot(r_coil, z_coil, c='tab:orange', alpha=0.9)
+            curve = coil.curve
+            phi_cut = np.arctan2(curve.get("Y"), curve.get("X"))
+            crossings = find_toroidal_plane_intersections(curve, phi_cut)
+            if len(crossings) >= 2:
+                crossings.sort(key=lambda p: p[1])
+                R0, Z0 = crossings[0]
+                R1, Z1 = crossings[-1]
+                plt.plot([R0, R1], [Z0, Z1], c='tab:orange', linewidth=1.5,
+                         alpha=0.9, zorder=5)
+            elif crossings:
+                plt.plot(crossings[0][0], crossings[0][1], 'o', c='tab:orange',
+                         markersize=4, zorder=5)
     plt.xlabel('R [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
     plt.ylabel('Z [m]', fontsize=plot_config.axisfontsize, fontweight='bold')
     plt.tick_params(axis='both', which='major', labelsize=plot_config.ticklabelfontsize)

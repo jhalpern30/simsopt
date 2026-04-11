@@ -36,6 +36,11 @@ def optimize(
     wp_ntor_target=None,
 ):
     
+    # When dipole_radius is None, both windowpane targets must be provided so
+    # generate_windowpane_array can derive coil sizes from the VV geometry.
+    if dipole_radius is None and (wp_npol_target is None or wp_ntor_target is None):
+        raise ValueError("dipole_radius is None — must provide both wp_npol_target and wp_ntor_target")
+
     # Create plot configuration
     plot_config = PlotConfig(
         dpi=100,
@@ -59,7 +64,6 @@ def optimize(
     VV.set_rc(0, 0, VV_R0)
     VV.set_rc(1, 0, VV_a)
     VV.set_zs(1, 0, VV_b)
-    plot_cross_section(surf, VV, output_dir, "stage_2", plot_config)
 
     # Coil regularization radii (meters)
     tf_coil_radius = 0  # TF coil filament radius
@@ -122,6 +126,7 @@ def optimize(
     )
     print(f"Initialized {nwps_poloidal}x{nwps_toroidal} (npol x ntor) windowpane coils with Rpol={Rpol:.3f}, Rtor_min={Rtor_min:.3f}, Rtor_max={Rtor_max:.3f}")
     nwptot = nwps_poloidal * nwps_toroidal * 2 * surf.nfp
+    plot_cross_section(surf, VV, output_dir, "stage_2", plot_config, base_dipole_coils=base_wp_coils)
 
     # ============================================================================
     # Optimization
@@ -158,6 +163,9 @@ def optimize(
     tf_base_scaled_currents = [
         ScaledCurrent(Current(1.0), c.current.get_value()) for c in base_tf_coils
     ]
+    for i in range(num_fixed):
+        tf_base_scaled_currents[i].fix_all()
+
     wp_base_scaled_currents = [
         ScaledCurrent(Current(1.0), c.current.get_value()) for c in base_wp_coils
     ]
@@ -263,7 +271,7 @@ def optimize(
         "final_squared_flux": Jf.J(),
         "avg_Bnormal": mean_abs_relBfinal_norm,
         "max_Bnormal": max_relBfinal_norm,
-        "peak_wp_field": np.max(np.abs(np.array(wp_currents))) * mu0 / 2 / (dipole_radius if dipole_radius is not None else Rtor_min),
+        "peak_wp_field": np.max(np.abs(np.array(wp_currents))) * mu0 / 2 / (dipole_radius if dipole_radius is not None else Rpol),
         "MA_meters": get_total_amp_meters(base_tf_coils, base_wp_coils, VV) / 1e6,
         "maxR0": np.max(R0s) if R0s is not None else None,
         "minR0": np.min(R0s) if R0s is not None else None,
