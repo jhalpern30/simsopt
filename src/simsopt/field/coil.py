@@ -534,7 +534,7 @@ def apply_symmetries_to_currents(base_currents, nfp, stellsym):
                 currents.append(current)
     return currents
 
-def coils_to_vtk(coils, filename, close=False, extra_data=None):
+def coils_to_vtk(coils, filename, close=False, extra_data=None) -> dict:
     """
     Export a list of Coil objects in VTK format, so they can be
     viewed using Paraview. This function requires the python package ``pyevtk``,
@@ -622,6 +622,8 @@ def coils_to_vtk(coils, filename, close=False, extra_data=None):
 
     # Call curves_to_vtk to save the curves and extra dictionary data 
     curves_to_vtk(curves, filename, close=close, extra_data=pointData)
+
+    return pointData
 
 def coils_via_symmetries(curves, currents, nfp, stellsym, regularizations=None):
     """
