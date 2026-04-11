@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import sys
 import json
 import argparse
@@ -87,6 +88,32 @@ parser.add_argument(
     help="Target plasma volume for Boozer surface initialization (default: 0.3). "
     "If not the default, output uses an extra _vol<value> suffix on the iota_tar directory name.",
 )
+parser.add_argument(
+    "--sparse",
+    action="store_true",
+    help="Remove outboard-midplane dipole coils before optimization. "
+    "When set, --init-dir should point to an existing stage iteration directory "
+    "(e.g. .../iota_tar0.15/stage00_cw0/mpol6_ntor6/) and output is written into "
+    "the same iota_tar parent with '_sparse' stage tags.",
+)
+parser.add_argument(
+    "--mpol",
+    type=int,
+    default=6,
+    help="Boozer surface poloidal mode resolution (default: 6).",
+)
+parser.add_argument(
+    "--ntor",
+    type=int,
+    default=6,
+    help="Boozer surface toroidal mode resolution (default: 6).",
+)
+parser.add_argument(
+    "--maxiter",
+    type=int,
+    default=150,
+    help="Maximum optimizer iterations per continuation step (default: 150).",
+)
 
 # Allow unknown args so this script can coexist with external launchers that add flags
 _args, _unknown = parser.parse_known_args()
@@ -104,6 +131,9 @@ CURRENT_WEIGHT_SCHEDULE = [
 ]
 # Boozer surface volume target (previously fixed at 0.3 here).
 VOL_TARGET = _args.vol_target
+SPARSE = _args.sparse
+MAXITER = _args.maxiter
+THETA_TOL = 0.01
 if not CURRENT_WEIGHT_SCHEDULE:
     raise ValueError("current-weight-schedule must contain at least one value.")
 if IOTA_REL_TOL <= 0:
@@ -114,10 +144,15 @@ if QS_REL_TOL <= 0:
     raise ValueError("qs-rel-tol must be > 0.")
 if VOL_TARGET <= 0:
     raise ValueError("vol-target must be > 0.")
+if _args.mpol < 1:
+    raise ValueError("mpol must be >= 1.")
+if _args.ntor < 1:
+    raise ValueError("ntor must be >= 1.")
+if _args.maxiter < 1:
+    raise ValueError("maxiter must be >= 1.")
 
 # Other parameters that are not set from the command line
 CONSTRAINT_WEIGHT = 1.0
-MAXITER = 150
 
 # Create plot configuration
 plot_config = PlotConfig(
@@ -128,6 +163,20 @@ plot_config = PlotConfig(
     ticklabelfontsize=14,
     cbarfontsize=16
 )
+
+
+def coil_center_theta(coil, major_radius):
+    """Poloidal angle of a coil's centroid relative to the torus major radius."""
+    gamma = coil.curve.gamma()
+    center = np.mean(gamma, axis=0)
+    x0, y0, z0 = center
+    r0 = np.sqrt(x0 * x0 + y0 * y0)
+    return np.mod(np.arctan2(z0, r0 - major_radius), 2 * np.pi)
+
+
+def angular_distance_to_zero(theta):
+    """Shortest angular distance from theta to 0 (i.e. outboard midplane)."""
+    return np.minimum(theta, 2 * np.pi - theta)
 
 
 def plot_objective_vs_iterations(out_dir, r0, i0, current_weight, qs_weight, iota_weight, config):
@@ -431,24 +480,39 @@ def callback(x):
 # This is created by and contains the results from stage 2, which we use to initialize single stage
 results = load(os.path.join(INIT_DIR, 'results.json'))
 
-# Boozer surface resolution
-mpol = 6
-ntor = 6
+# Boozer surface resolution (--mpol / --ntor; default 6 each)
+mpol = _args.mpol
+ntor = _args.ntor
 
 # EMPIRICAL convergence tolerances for different mpol values
 GTOL = 1e-2
 
 # Output directory setup
 eq_name = results["eq_name"]
-_iota_leaf = f"iota_tar{IOTA_TARGET:g}"
-if not np.isclose(VOL_TARGET, _DEFAULT_VOL_TARGET, rtol=0.0, atol=1e-15):
-    _iota_leaf = f"{_iota_leaf}_vol{VOL_TARGET:g}"
-OUT_ROOT = os.path.join(
-    "..",
-    "single_stage_scans_epsilon_constraint_updated",
-    f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}",
-    _iota_leaf,
-)
+if SPARSE:
+    # init-dir is .../iota_tar*/stageNN_cwX/mpolM_ntorN/; go up 2 levels.
+    OUT_ROOT = os.path.dirname(os.path.dirname(INIT_DIR))
+    # Read iota_target from source results when CLI is still at default.
+    if _args.iota_target == parser.get_default("iota_target"):
+        IOTA_TARGET = float(results.get("iota_target", IOTA_TARGET))
+else:
+    _iota_leaf = f"iota_tar{IOTA_TARGET:g}"
+    if not np.isclose(VOL_TARGET, _DEFAULT_VOL_TARGET, rtol=0.0, atol=1e-15):
+        _iota_leaf = f"{_iota_leaf}_vol{VOL_TARGET:g}"
+    # init-dir is .../iota_tar*/stageNN_cwX/mpolM_ntorN/: write under that iota_tar* tree
+    # (same layout as --sparse parent). Legacy layout: stage-2 folder as last path segment.
+    _stage_parent = os.path.basename(os.path.dirname(os.path.abspath(os.path.expanduser(INIT_DIR))))
+    if re.match(r"stage\d+_cw", _stage_parent):
+        OUT_ROOT = os.path.abspath(
+            os.path.join(os.path.expanduser(INIT_DIR), "..", "..")
+        )
+    else:
+        OUT_ROOT = os.path.join(
+            "..",
+            "single_stage_scans_epsilon_constraint_updated",
+            f"{eq_name}_init_dir{INIT_DIR.split('/')[-1].split('_')[0]}",
+            _iota_leaf,
+        )
 os.makedirs(OUT_ROOT, exist_ok=True)
 
 print("Starting single-stage optimization on: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -498,6 +562,31 @@ tf_curves = [c.curve for c in tf_coils]
 dipole_coils = coils[num_tf_coils:]
 dipole_curves = [c.curve for c in dipole_coils]
 
+# Sparse mode: remove outboard-midplane dipoles before optimization.
+if SPARSE:
+    removed_dipoles = []
+    kept_dipoles = []
+    for idx, coil in enumerate(dipole_coils):
+        theta = coil_center_theta(coil, results["VV_R0"])
+        if angular_distance_to_zero(theta) <= THETA_TOL:
+            removed_dipoles.append((idx, theta))
+        else:
+            kept_dipoles.append(coil)
+    if not kept_dipoles:
+        raise RuntimeError(
+            f"All {len(dipole_coils)} dipole coils were removed with "
+            f"theta_tol={THETA_TOL}; increase --theta-tol."
+        )
+    print(f"Sparse: removed {len(removed_dipoles)}/{len(dipole_coils)} outboard dipoles "
+          f"(theta_tol={THETA_TOL})")
+    dipole_coils = kept_dipoles
+    dipole_curves = [c.curve for c in dipole_coils]
+    coils = tf_coils + dipole_coils
+    curves = [c.curve for c in coils]
+    bs = BiotSavart(coils)
+else:
+    removed_dipoles = []
+
 # Just triple make sure they're fixed
 for c in dipole_curves:
     c.fix_all()
@@ -538,7 +627,7 @@ Jiota_raw = QuadraticPenalty(iota, IOTA_TARGET)
 iota_scale = IOTA_REL_TOL * IOTA_TARGET
 Jiota = (1.0 / (iota_scale ** 2)) * Jiota_raw
 
-# Keep non-QS ratio below a user-specified target.
+# Keep non-QS ratio below a user-specified target to within some tolerance
 JnonQSRatio = sum(nonQSs)
 QS_RATIO_INITIAL = float(JnonQSRatio.J())
 JQSGuard_raw = QuadraticPenalty(JnonQSRatio, QS_TARGET, f="max")
@@ -555,8 +644,18 @@ Jcurrent = CurrentPenalty([c.current for c in dipole_coils], p=CURRENT_P_NORM)
 # --------------------------------------------------------------------------
 # Normalize Boozer residual and current objective by their initial values so
 # current-weight continuation has consistent meaning across runs.
+# When --sparse, inherit Boozer residual scaling from the source stage
+# so current-weight retains consistent physical meaning across the continuation
+# chain, even after the residual increases from removing outboard dipoles.
 # --------------------------------------------------------------------------
-R0 = float(JBoozerResidual.J())
+if SPARSE:
+    if results.get("R0_boozer_residual") is not None:
+        R0 = float(results["R0_boozer_residual"])
+    else:
+        R0 = float(JBoozerResidual.J())
+else:
+    R0 = float(JBoozerResidual.J())
+
 I0 = float(Jcurrent.J())
 if not np.isfinite(R0) or R0 <= 0:
     raise ValueError(f"Invalid initial Boozer residual for normalization: R0={R0}")
@@ -579,9 +678,20 @@ print(f"Continuation current weights: {CURRENT_WEIGHT_SCHEDULE}")
 #       stage00_cw0.3/mpol6_ntor6/...
 #       stage01_cw1/mpol6_ntor6/...
 # --------------------------------------------------------------------------
+# Stage numbering: when --sparse, continue from the source stage index.
+if SPARSE:
+    _stage_parent = os.path.basename(os.path.dirname(INIT_DIR))
+    _m = re.match(r"stage(\d+)_", _stage_parent)
+    _stage_offset = int(_m.group(1)) + 1 if _m else 0
+else:
+    _stage_offset = 0
+
 x0 = None
 for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
-    stage_tag = f"stage{stage_idx:02d}_cw{CURRENT_WEIGHT:g}"
+    effective_idx = stage_idx + _stage_offset
+    stage_tag = f"stage{effective_idx:02d}_cw{CURRENT_WEIGHT:g}"
+    if SPARSE:
+        stage_tag += "_sparse"
     OUT_DIR_STAGE = os.path.join(OUT_ROOT, stage_tag)
     OUT_DIR_ITER = os.path.join(OUT_DIR_STAGE, f"mpol{mpol}_ntor{ntor}")
     os.makedirs(OUT_DIR_ITER, exist_ok=True)
@@ -700,7 +810,7 @@ for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
         },
 
         # Continuation metadata
-        "continuation_stage": int(stage_idx),
+        "continuation_stage": int(effective_idx),
         "current_weight_schedule": [float(v) for v in CURRENT_WEIGHT_SCHEDULE],
         "current_weight_stage": float(CURRENT_WEIGHT),
 
@@ -758,6 +868,10 @@ for stage_idx, CURRENT_WEIGHT in enumerate(CURRENT_WEIGHT_SCHEDULE):
         "VV_b": results["VV_b"],
         "ntf": results["ntf"],
     }
+    if SPARSE:
+        results_output["sparse"] = True
+        results_output["theta_tol"] = float(THETA_TOL)
+        results_output["removed_outboard_dipoles"] = len(removed_dipoles)
 
     # Save to file
     save(results_output, os.path.join(OUT_DIR_ITER, "results.json"))
