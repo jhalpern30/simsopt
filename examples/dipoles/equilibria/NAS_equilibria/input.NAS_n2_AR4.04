@@ -3,7 +3,7 @@
   LFREEB = F
   DELT =   5.00E-01
   TCON0 =   2.00E+00
-  NFP =    1
+  NFP =    2
   NCURR =    1
 MPOL = 11
 NTOR = 10
