@@ -731,7 +731,15 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coi
     if base_dipole_coils:
         for coil in base_dipole_coils:
             curve = coil.curve
-            phi_cut = np.arctan2(curve.get("Y"), curve.get("X"))
+            # Prefer dofs if present; otherwise fall back to geometric center
+            if hasattr(wp.curve, "dof_names") and "X" in wp.curve.dof_names:
+                x0 = curve.get("X")
+                y0 = curve.get("Y")
+                z0 = curve.get("Z")
+            else:
+                center = np.mean(curve.gamma(), axis=0)
+                x0, y0, z0 = center
+            phi_cut = np.arctan2(y0, x0)
             crossings = find_toroidal_plane_intersections(curve, phi_cut)
             if len(crossings) >= 2:
                 crossings.sort(key=lambda p: p[1])
