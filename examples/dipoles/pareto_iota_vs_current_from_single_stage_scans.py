@@ -314,7 +314,15 @@ def load_scan(
     sparse_mode: str,
     exclude_precision_loss: bool = False,
 ):
-    """Load and filter final records for all runs under `scan_root`."""
+    """
+    Load and filter final records for all runs under `scan_root`.
+
+    ``sparse_mode`` matches :file:`postprocess_single_stage_runs.py`:
+      - ``all``: no sparsity filtering
+      - ``dense``: exclude both *_sparse and *_sparsity stage directories
+      - ``sparse``: include only *_sparse stages
+      - ``sparsity``: include only *_sparsity stages
+    """
     records = []
     stats = {
         "total_dirs": 0,
@@ -322,19 +330,26 @@ def load_scan(
         "rejected_missing_required_fields": 0,
         "rejected_boozer_residual": 0,
         "rejected_non_sparse": 0,
-        "rejected_sparse": 0,
+        "rejected_not_sparsity": 0,
+        "rejected_non_dense": 0,
         "rejected_precision_loss": 0,
     }
 
     for run_dir in find_run_dirs(scan_root):
         stats["total_dirs"] += 1
-        # Match stage folders like stage03_cw3_sparsity, not *_no_sparsity_* in scan root names.
-        is_sparse_path = any("sparsity" in p for p in run_dir.parts)
-        if sparse_mode == "sparse" and not is_sparse_path:
+        # Same sparse_mode rules as postprocess_single_stage_runs.iter_run_directories:
+        # classify by the stage folder basename (parent of mpol*_ntor*).
+        stage_name = run_dir.parent.name.lower()
+        stage_is_sparsity = "sparsity" in stage_name
+        stage_is_sparse = ("sparse" in stage_name) and (not stage_is_sparsity)
+        if sparse_mode == "dense" and (stage_is_sparse or stage_is_sparsity):
+            stats["rejected_non_dense"] += 1
+            continue
+        if sparse_mode == "sparse" and not stage_is_sparse:
             stats["rejected_non_sparse"] += 1
             continue
-        if sparse_mode == "dense" and is_sparse_path:
-            stats["rejected_sparse"] += 1
+        if sparse_mode == "sparsity" and not stage_is_sparsity:
+            stats["rejected_not_sparsity"] += 1
             continue
         last = load_last_iteration(run_dir)
         if last is None:
@@ -663,20 +678,19 @@ def main():
     )
     sparse_group = parser.add_mutually_exclusive_group()
     sparse_group.add_argument(
-        "--sparse",
-        action="store_true",
-        help=(
-            "Only include runs under a subdirectory whose basename contains "
-            "'sparsity' (e.g. stage03_cw3_sparsity)."
-        ),
-    )
-    sparse_group.add_argument(
         "--dense",
         action="store_true",
-        help=(
-            "Only include non-sparse runs (exclude paths whose subdirectory basename "
-            "contains 'sparsity')."
-        ),
+        help="Only include dense runs: filter out both *_sparse and *_sparsity stage directories.",
+    )
+    sparse_group.add_argument(
+        "--sparse",
+        action="store_true",
+        help="Only include runs in stage directories ending with *_sparse.",
+    )
+    sparse_group.add_argument(
+        "--sparsity",
+        action="store_true",
+        help="Only include runs in stage directories ending with *_sparsity.",
     )
     parser.add_argument(
         "--best-per-iota-init",
@@ -765,10 +779,12 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sparse_mode = "all"
-    if args.sparse:
-        sparse_mode = "sparse"
-    elif args.dense:
+    if args.dense:
         sparse_mode = "dense"
+    elif args.sparse:
+        sparse_mode = "sparse"
+    elif args.sparsity:
+        sparse_mode = "sparsity"
 
     records, stats = load_scan(
         scan_root,
@@ -783,8 +799,12 @@ def main():
     print(f"Sparse filter mode: {sparse_mode}")
     print(f"Exclude precision-loss runs from plot: {args.exclude_precision_loss}")
     print(f"Total run directories discovered: {stats['total_dirs']}")
-    print(f"Rejected (non-sparse path, --sparse only): {stats['rejected_non_sparse']}")
-    print(f"Rejected (sparse path, --dense only): {stats['rejected_sparse']}")
+    print(f"Rejected (not *_sparse stage, --sparse only): {stats['rejected_non_sparse']}")
+    print(f"Rejected (not *_sparsity stage, --sparsity only): {stats['rejected_not_sparsity']}")
+    print(
+        "Rejected (*_sparse or *_sparsity stage, --dense only): "
+        f"{stats['rejected_non_dense']}"
+    )
     print(f"Rejected (no valid iterations.json): {stats['rejected_no_iter']}")
     print(f"Rejected (missing required final fields): {stats['rejected_missing_required_fields']}")
     print(f"Rejected (Boozer residual above threshold): {stats['rejected_boozer_residual']}")

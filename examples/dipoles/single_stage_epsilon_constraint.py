@@ -678,11 +678,15 @@ print(f"Continuation current weights: {CURRENT_WEIGHT_SCHEDULE}")
 #       stage00_cw0.3/mpol6_ntor6/...
 #       stage01_cw1/mpol6_ntor6/...
 # --------------------------------------------------------------------------
-# Stage numbering: when --sparse, continue from the source stage index.
-if SPARSE:
-    _stage_parent = os.path.basename(os.path.dirname(INIT_DIR))
-    _m = re.match(r"stage(\d+)_", _stage_parent)
-    _stage_offset = int(_m.group(1)) + 1 if _m else 0
+# Stage numbering:
+# - Default/non-sparse: preserve the source stage index so high-res reruns keep
+#   the same stage number as their initialization run.
+# - Sparse: continue to the next stage index.
+_stage_parent = os.path.basename(os.path.dirname(INIT_DIR))
+_m = re.match(r"stage(\d+)_", _stage_parent)
+if _m:
+    _init_stage_idx = int(_m.group(1))
+    _stage_offset = _init_stage_idx + 1 if SPARSE else _init_stage_idx
 else:
     _stage_offset = 0
 
