@@ -38,6 +38,8 @@ from simsopt.field import CircularRegularizedCoil, coils_to_vtk
 # Must match single_stage_epsilon_constraint.py default for path segments without _vol*.
 _DEFAULT_VOL_TARGET = 0.3
 _IOTA_VOL_DIR_RE = re.compile(r"^iota_tar([0-9.eE+-]+)(?:_vol([0-9.eE+-]+))?$")
+_VT_SUFFIX_RE = re.compile(r".*_vt([0-9.eE+-]+)$")
+_MPOL_NTOR_RE = re.compile(r"^mpol([0-9]+)_ntor([0-9]+)$", re.IGNORECASE)
 
 
 def _coils_to_vtk_paths(run_dir: Path, vtk_basename: str) -> Tuple[str, Path]:
@@ -161,19 +163,24 @@ def _path_has_sparse_marker(path: Path) -> bool:
     )
 
 
-def _deepest_iota_tar_vol(path: Path) -> Tuple[bool, Optional[str]]:
+def _deepest_encoded_volume(path: Path) -> Tuple[bool, Optional[str]]:
     """
-    Find the deepest path segment matching iota_tar*.
+    Find the deepest path segment encoding a volume target.
 
     Returns:
         (False, None) if no such segment exists.
-        (True, None) if a segment matches and has no _vol suffix (default-volume naming).
-        (True, str) if a segment matches and has _vol<value> (group 2 string).
+        (True, None) if a segment matches ``iota_tar*`` with no ``_vol`` suffix
+        (default-volume naming).
+        (True, str) if a segment matches either ``iota_tar*_vol<value>`` or
+        ``*_vt<value>``.
     """
     for part in reversed(path.parts):
         m = _IOTA_VOL_DIR_RE.match(part)
         if m:
             return True, m.group(2)
+        vt = _VT_SUFFIX_RE.match(part)
+        if vt:
+            return True, vt.group(1)
     return False, None
 
 
@@ -187,7 +194,7 @@ def _path_matches_vol_target(path: Path, vol_target: float) -> bool:
 
     Paths with no iota_tar* segment are kept (layout does not encode volume).
     """
-    found, vol_suff = _deepest_iota_tar_vol(path)
+    found, vol_suff = _deepest_encoded_volume(path)
     if not found:
         return True
     if np.isclose(vol_target, _DEFAULT_VOL_TARGET, rtol=0.0, atol=1e-12):
@@ -206,7 +213,9 @@ def _iter_run_dirs(
     recursive: bool,
     skip_sparse: bool,
     vol_target: Optional[float],
+    highest_resolution_only: bool,
 ) -> Iterable[Path]:
+    candidates: List[Path] = []
     if recursive:
         for p in root.rglob("bs_opt.json"):
             parent = p.parent
@@ -214,7 +223,7 @@ def _iter_run_dirs(
                 continue
             if vol_target is not None and not _path_matches_vol_target(parent, vol_target):
                 continue
-            yield parent
+            candidates.append(parent)
     else:
         for child in sorted(root.iterdir()):
             if child.is_dir() and (child / "bs_opt.json").is_file():
@@ -222,7 +231,33 @@ def _iter_run_dirs(
                     continue
                 if vol_target is not None and not _path_matches_vol_target(child, vol_target):
                     continue
-                yield child
+                candidates.append(child)
+
+    if not highest_resolution_only:
+        yield from candidates
+        return
+
+    # Keep only the highest mpol/ntor run under each immediate case directory.
+    # Example case layout:
+    #   .../iota*_fcp*_vt*/mpol*_ntor*/
+    # For run dirs that do not match mpol*_ntor*, keep them unchanged.
+    best_by_case: Dict[Path, Tuple[Tuple[int, int, int], Path]] = {}
+    passthrough: List[Path] = []
+    for run_dir in candidates:
+        m = _MPOL_NTOR_RE.match(run_dir.name)
+        if m is None:
+            passthrough.append(run_dir)
+            continue
+        mpol = int(m.group(1))
+        ntor = int(m.group(2))
+        score = (mpol * ntor, mpol, ntor)
+        case_dir = run_dir.parent
+        prev = best_by_case.get(case_dir)
+        if prev is None or score > prev[0]:
+            best_by_case[case_dir] = (score, run_dir)
+
+    filtered = sorted([v[1] for v in best_by_case.values()] + passthrough)
+    yield from filtered
 
 
 def parse_args() -> argparse.Namespace:
@@ -274,6 +309,14 @@ def parse_args() -> argparse.Namespace:
             f"{_DEFAULT_VOL_TARGET:g} means iota_tar* with no _vol suffix; "
             "other values require .../iota_tar*_vol<V>/... . "
             "Paths without any iota_tar* segment are not excluded."
+        ),
+    )
+    p.add_argument(
+        "--highest-resolution-only",
+        action="store_true",
+        help=(
+            "For case directories containing multiple mpol*_ntor* runs, process only the "
+            "highest available resolution (largest mpol*ntor; tie-break mpol, then ntor)."
         ),
     )
     p.add_argument(
@@ -402,6 +445,7 @@ def main() -> None:
                 recursive,
                 skip_sparse=args.no_sparse,
                 vol_target=args.vol_target,
+                highest_resolution_only=args.highest_resolution_only,
             )
         )
     )
@@ -415,9 +459,10 @@ def main() -> None:
     vmsg = ""
     if args.vol_target is not None:
         vmsg = f", vol_target={args.vol_target:g}"
+    hmsg = f", highest_resolution_only={args.highest_resolution_only}"
     print(
         f"Found {len(run_dirs)} run director(y/ies) with bs_opt.json under {root}"
-        f" (no_sparse={args.no_sparse}{vmsg})"
+        f" (no_sparse={args.no_sparse}{vmsg}{hmsg})"
     )
     ok = 0
     for run_dir in run_dirs:

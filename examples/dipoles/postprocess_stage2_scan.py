@@ -21,6 +21,8 @@ matplotlib.use("Agg")
 
 def load_stage2_scan(scan_root):
     scan_root = Path(scan_root).resolve()
+    if scan_root.name.startswith("stage_2") and scan_root.name.endswith("_sparse"):
+        return []
     records = []
     for run_dir in sorted(scan_root.iterdir()):
         if not run_dir.is_dir():

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Create a GIF across increasing iota at fixed CURRENT_WEIGHT.
+Create a GIF across true-epsilon runs in single-stage scan folders.
 
-Filters applied by default:
-- Exclude paths containing "sparse" or "sparsity" (case-insensitive).
-- Use only iota folders without "_vol" suffix (implicit volume target 0.3).
-- Use only run directories named mpol6_ntor*.
+The script supports two sweep modes:
+- Fix `fcp_threshold` and sweep increasing iota target.
+- Fix iota target and sweep increasing `fcp_threshold`.
 
-Each GIF frame is loaded from a file inside each run directory (default: modB_plot.png).
-If multiple runs match the same iota target, the one with smallest final J_Boozer is used.
+For each sweep value, the script keeps the highest (mpol, ntor)
+resolution found on disk. If multiple runs exist at the same
+resolution, the one with smallest final Boozer residual is used.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ except Exception:  # pragma: no cover - optional fallback when matplotlib is una
     plt = None
 
 
-_IOTA_DIR_RE = re.compile(r"iota_tar([\d.]+)$")
 _MPOL_DIR_RE = re.compile(r"mpol(\d+)_ntor(\d+)$")
+_TRUE_EPS_DIR_RE = re.compile(r"iota([\d.]+)_fcp([\d.]+)kA(?:_vt[\d.]+)?$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,15 +37,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--scan-dir",
         type=Path,
-        required=True,
-        help="Root directory containing single-stage scan runs.",
+        default=Path("../single_stage_true_epsilon_sequential"),
+        help="Root directory containing single-stage true-epsilon scan runs.",
     )
     sweep_group = p.add_mutually_exclusive_group(required=True)
     sweep_group.add_argument(
-        "--w-cp",
+        "--fcp-threshold",
         type=float,
         help=(
-            "Fix CURRENT_WEIGHT to this value and sweep increasing iota target. "
+            "Fix fcp threshold (in amps) to this value and sweep increasing iota target. "
             "Mutually exclusive with --iota-target."
         ),
     )
@@ -53,21 +53,21 @@ def parse_args() -> argparse.Namespace:
         "--iota-target",
         type=float,
         help=(
-            "Fix iota target to this value and sweep increasing CURRENT_WEIGHT. "
-            "Mutually exclusive with --w-cp."
+            "Fix iota target to this value and sweep increasing fcp threshold. "
+            "Mutually exclusive with --fcp-threshold."
         ),
     )
     p.add_argument(
         "--frame-file",
         type=str,
-        default="modB_plot.png",
+        default="x_section_optimized.png",
         help="Filename to load from each run directory for GIF frames.",
     )
     p.add_argument(
         "--out",
         type=Path,
         default=None,
-        help="Output GIF path (default: <scan-dir>/postprocess_plots/iota_increasing_wc<value>.gif).",
+        help="Output GIF path (default: <scan-dir>/postprocess_plots/<mode-specific-name>.gif).",
     )
     p.add_argument(
         "--fps",
@@ -75,75 +75,76 @@ def parse_args() -> argparse.Namespace:
         default=1.2,
         help="Frames per second for the GIF.",
     )
-    p.add_argument(
+    text_overlay_group = p.add_mutually_exclusive_group()
+    text_overlay_group.add_argument(
         "--text-overlay",
+        dest="text_overlay",
         action="store_true",
-        help="Overlay frame annotation in the top-left corner.",
+        help="Overlay frame annotation in the top-left corner (default: enabled).",
     )
+    text_overlay_group.add_argument(
+        "--no-text-overlay",
+        dest="text_overlay",
+        action="store_false",
+        help="Disable frame annotation overlay.",
+    )
+    p.set_defaults(text_overlay=True)
     p.add_argument(
         "--overlay-mode",
-        choices=["iota_only", "iota_and_wc"],
+        choices=["iota_only", "iota_and_fcp"],
         default="iota_only",
         help="Overlay text content style (default: iota_only).",
     )
     return p.parse_args()
 
 
-def _extract_iota_target(run_dir: Path) -> float | None:
+def _extract_mpol_ntor(run_dir: Path) -> tuple[int, int] | None:
     for part in run_dir.parts:
-        m = _IOTA_DIR_RE.fullmatch(part)
+        m = _MPOL_DIR_RE.fullmatch(part)
         if m:
-            return float(m.group(1))
+            return int(m.group(1)), int(m.group(2))
     return None
 
 
-def _run_is_mpol6(run_dir: Path) -> bool:
+def _extract_true_epsilon_targets_from_path(run_dir: Path) -> tuple[float | None, float | None]:
     for part in run_dir.parts:
-        m = _MPOL_DIR_RE.fullmatch(part)
-        if not m:
-            continue
-        return int(m.group(1)) == 6
-    return False
+        m = _TRUE_EPS_DIR_RE.fullmatch(part)
+        if m:
+            return float(m.group(1)), float(m.group(2)) * 1000.0
+    return None, None
 
 
-def _path_contains_sparse_token(run_dir: Path) -> bool:
-    return any(("sparse" in part.lower()) or ("sparsity" in part.lower()) for part in run_dir.parts)
-
-
-def _path_is_default_volume_iota_dir(run_dir: Path) -> bool:
-    # Keep only iota_tar* directories without explicit _vol* suffix.
-    for part in run_dir.parts:
-        if part.startswith("iota_tar"):
-            return "_vol" not in part
-    return False
-
-
-def _load_iterations(run_dir: Path) -> tuple[float | None, float | None]:
+def _load_true_epsilon_metadata(run_dir: Path) -> tuple[float | None, float | None, float]:
     path = run_dir / "iterations.json"
+    iota_target, fcp_threshold = _extract_true_epsilon_targets_from_path(run_dir)
+    last_boozer = math.inf
     if not path.is_file():
-        return None, None
+        return iota_target, fcp_threshold, last_boozer
+
     try:
         with open(path, "r") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return iota_target, fcp_threshold, last_boozer
 
-    cw = None
-    weights = data.get("weights")
-    if isinstance(weights, dict):
-        v = weights.get("CURRENT_WEIGHT")
+    cfg = data.get("config") if isinstance(data.get("config"), dict) else {}
+    if iota_target is None:
+        v = cfg.get("iota_target")
         if isinstance(v, (int, float)):
-            cw = float(v)
+            iota_target = float(v)
+    if fcp_threshold is None:
+        v = cfg.get("f_cp_threshold")
+        if isinstance(v, (int, float)):
+            fcp_threshold = float(v)
 
-    boozer = None
     iterations = data.get("iterations")
     if isinstance(iterations, list) and iterations:
         last = iterations[-1]
         if isinstance(last, dict):
-            b = last.get("J_Boozer")
-            if isinstance(b, (int, float)):
-                boozer = float(b)
-    return cw, boozer
+            boozer = last.get("boozer_residual")
+            if isinstance(boozer, (int, float)):
+                last_boozer = float(boozer)
+    return iota_target, fcp_threshold, last_boozer
 
 
 def _load_frame(path: Path, add_label: str | None = None) -> Image.Image:
@@ -192,26 +193,25 @@ def main() -> None:
     if args.out is None:
         out_dir = scan_dir / "postprocess_plots"
         out_dir.mkdir(parents=True, exist_ok=True)
-        if args.w_cp is not None:
-            out_path = out_dir / f"iota_increasing_wc{args.w_cp:g}.gif"
+        if args.fcp_threshold is not None:
+            out_path = out_dir / f"iota_increasing_fcp{args.fcp_threshold:g}.gif"
         else:
-            out_path = out_dir / f"wc_increasing_iota{args.iota_target:g}.gif"
+            out_path = out_dir / f"fcp_increasing_iota{args.iota_target:g}.gif"
     else:
         out_path = args.out.resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Keyed by the swept variable:
-    # - fixed --w-cp: key is iota target
-    # - fixed --iota-target: key is current weight
+    # - fixed --fcp-threshold: key is iota target
+    # - fixed --iota-target: key is fcp threshold
     candidates: dict[float, dict] = {}
     n_total = 0
     n_reject = {
-        "sparse": 0,
-        "vol": 0,
-        "mpol": 0,
+        "missing_resolution": 0,
         "missing_iota": 0,
+        "missing_fcp": 0,
         "iota_mismatch": 0,
-        "cw_mismatch": 0,
+        "fcp_mismatch": 0,
         "missing_frame": 0,
     }
 
@@ -220,35 +220,29 @@ def main() -> None:
             continue
         n_total += 1
 
-        if _path_contains_sparse_token(run_dir):
-            n_reject["sparse"] += 1
+        res = _extract_mpol_ntor(run_dir)
+        if res is None:
+            n_reject["missing_resolution"] += 1
             continue
-        if not _path_is_default_volume_iota_dir(run_dir):
-            n_reject["vol"] += 1
-            continue
-        if not _run_is_mpol6(run_dir):
-            n_reject["mpol"] += 1
-            continue
+        mpol, ntor = res
 
-        iota_tar = _extract_iota_target(run_dir)
+        iota_tar, fcp_threshold, boozer = _load_true_epsilon_metadata(run_dir)
         if iota_tar is None:
             n_reject["missing_iota"] += 1
             continue
-
-        current_weight, boozer = _load_iterations(run_dir)
-        if current_weight is None:
-            n_reject["cw_mismatch"] += 1
+        if fcp_threshold is None:
+            n_reject["missing_fcp"] += 1
             continue
-        if args.w_cp is not None:
-            if not math.isclose(current_weight, args.w_cp, rel_tol=0.0, abs_tol=1e-12):
-                n_reject["cw_mismatch"] += 1
+        if args.fcp_threshold is not None:
+            if not math.isclose(fcp_threshold, args.fcp_threshold, rel_tol=0.0, abs_tol=1e-12):
+                n_reject["fcp_mismatch"] += 1
                 continue
             sweep_key = iota_tar
         else:
             if not math.isclose(iota_tar, args.iota_target, rel_tol=0.0, abs_tol=1e-12):
                 n_reject["iota_mismatch"] += 1
                 continue
-            sweep_key = current_weight
+            sweep_key = fcp_threshold
 
         frame_path = run_dir / args.frame_file
         if not frame_path.is_file():
@@ -259,11 +253,18 @@ def main() -> None:
             "run_dir": run_dir,
             "frame_path": frame_path,
             "iota": iota_tar,
-            "cw": current_weight,
+            "fcp": fcp_threshold,
+            "mpol": mpol,
+            "ntor": ntor,
+            "resolution": (mpol, ntor),
             "boozer": math.inf if boozer is None else boozer,
         }
         prev = candidates.get(sweep_key)
-        if prev is None or record["boozer"] < prev["boozer"]:
+        if (
+            prev is None
+            or record["resolution"] > prev["resolution"]
+            or (record["resolution"] == prev["resolution"] and record["boozer"] < prev["boozer"])
+        ):
             candidates[sweep_key] = record
 
     selected = [candidates[k] for k in sorted(candidates.keys())]
@@ -279,10 +280,10 @@ def main() -> None:
         label = None
         if args.text_overlay:
             if args.iota_target is not None:
-                # When sweeping current weight at fixed iota target, annotate frames by w_cp.
-                label = rf"$w_{{\mathrm{{CP}}}}={rec['cw']:.6g}$"
-            elif args.overlay_mode == "iota_and_wc":
-                label = rf"$\iota_{{\mathrm{{tar}}}}={rec['iota']:.6g}\quad w_{{\mathrm{{CP}}}}={rec['cw']:.6g}$"
+                # When sweeping fcp at fixed iota target, annotate frames by fcp.
+                label = rf"$f_{{\mathrm{{CP}}}}={rec['fcp']:.6g}$"
+            elif args.overlay_mode == "iota_and_fcp":
+                label = rf"$\iota_{{\mathrm{{tar}}}}={rec['iota']:.6g}\quad f_{{\mathrm{{CP}}}}={rec['fcp']:.6g}$"
             else:
                 label = rf"$\iota_{{\mathrm{{tar}}}}={rec['iota']:.6g}$"
         frames.append(_load_frame(rec["frame_path"], add_label=label))
@@ -312,14 +313,20 @@ def main() -> None:
     print(f"Selected frames: {len(selected)}")
     print(f"Frame file: {args.frame_file}")
     print(f"Output GIF: {out_path}")
-    if args.w_cp is not None:
+    if args.fcp_threshold is not None:
         print("Included runs (sorted by iota):")
         for rec in selected:
-            print(f"  iota_tar={rec['iota']:.6g}  J_Boozer={rec['boozer']:.3e}  {rec['run_dir']}")
+            print(
+                f"  iota_tar={rec['iota']:.6g}  mpol={rec['mpol']} ntor={rec['ntor']}  "
+                f"boozer={rec['boozer']:.3e}  {rec['run_dir']}"
+            )
     else:
-        print("Included runs (sorted by w_cp):")
+        print("Included runs (sorted by fcp):")
         for rec in selected:
-            print(f"  w_cp={rec['cw']:.6g}  J_Boozer={rec['boozer']:.3e}  {rec['run_dir']}")
+            print(
+                f"  fcp={rec['fcp']:.6g}  mpol={rec['mpol']} ntor={rec['ntor']}  "
+                f"boozer={rec['boozer']:.3e}  {rec['run_dir']}"
+            )
 
 
 if __name__ == "__main__":

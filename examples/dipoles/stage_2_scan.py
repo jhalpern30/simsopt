@@ -20,14 +20,14 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 ### Campaign Settings (edit per run) ###
 eq_name = "wout_nfp22ginsburg_000_000281"  # name of the wout file from vmec
-npol = 10        # number of poloidal windowpane coils (user-specified per run)
+npol = 9        # number of poloidal windowpane coils (user-specified per run)
 ntor = 8        # number of toroidal windowpane coils (always 8)
 CURRENT_THRESHOLD = 1e6   # threshold for current penalty
 CURRENT_WEIGHT = 1e-12    # weight on current penalty
-n_samples = 50           # number of geometry samples to run
+n_samples = 75           # number of geometry samples to run
 
 # Define output parent folder
-output_subfolder = f"stage_2_npol{npol}_ntor{ntor}_{eq_name}_sparse"
+output_subfolder = f"stage_2_npol{npol}_ntor{ntor}_{eq_name}"
 parent_run_dir = os.path.join(script_dir, f"../outputs/{output_subfolder}")
 os.makedirs(parent_run_dir, exist_ok=True)
 

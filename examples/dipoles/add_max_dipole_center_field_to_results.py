@@ -60,6 +60,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print per-file details and warnings.",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Print a progress line every N runs that need computation (default: 10).",
+    )
     return parser.parse_args()
 
 
@@ -70,6 +77,13 @@ def _payload(results: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(results.get("graph"), dict):
         return results["graph"]
     return results
+
+
+def has_cached_center_field_metrics(results: Dict[str, Any]) -> bool:
+    """True if scaled max dipole center field is already stored in results."""
+    payload = _payload(results)
+    val = payload.get("max_dipole_center_field_over_on_axis")
+    return isinstance(val, (int, float))
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -207,6 +221,11 @@ def update_one_run(
     except Exception as exc:  # pylint: disable=broad-exception-caught
         return False, f"Failed reading results.json: {exc}"
 
+    if has_cached_center_field_metrics(results):
+        payload = _payload(results)
+        cached = float(payload["max_dipole_center_field_over_on_axis"])
+        return True, f"skipped (cached max_dipole_center_field_over_on_axis={cached:.6e})"
+
     try:
         bs = load(str(bs_path))
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -267,9 +286,11 @@ def main() -> None:
 
     print(f"Found {len(run_dirs)} run directories under: {root}")
     updated = 0
+    skipped = 0
     failed = 0
+    computed = 0
 
-    for run_dir in run_dirs:
+    for idx, run_dir in enumerate(run_dirs, start=1):
         ok, msg = update_one_run(
             run_dir,
             cli_field_on_axis=args.field_on_axis,
@@ -278,14 +299,25 @@ def main() -> None:
         )
         if ok:
             updated += 1
-            if args.verbose or args.dry_run:
-                print(f"[OK] {run_dir}: {msg}")
+            if msg.startswith("skipped"):
+                skipped += 1
+            else:
+                computed += 1
+            show = (
+                args.verbose
+                or args.dry_run
+                or (computed > 0 and computed % args.progress_every == 0)
+            )
+            if show:
+                print(f"[{idx}/{len(run_dirs)}] {run_dir}: {msg}")
         else:
             failed += 1
-            print(f"[FAIL] {run_dir}: {msg}")
+            print(f"[FAIL] [{idx}/{len(run_dirs)}] {run_dir}: {msg}")
 
     action = "Would update" if args.dry_run else "Updated"
-    print(f"{action} {updated} runs; {failed} failed.")
+    print(
+        f"{action} {updated} runs ({skipped} cached, {computed} computed); {failed} failed."
+    )
 
 
 if __name__ == "__main__":

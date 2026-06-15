@@ -357,7 +357,7 @@ def derivativeJcp(current, CURRENT_THRESHOLD):
     grad = np.where(current > 0, 2 * (current - CURRENT_THRESHOLD), 2 * (current + CURRENT_THRESHOLD))
     return grad * mask
 
-def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, definition='local', precomputed=True, maxiter=1000, current_threshold=1e12, current_weight=1, num_fixed=1, verbose=False):
+def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, definition='local', precomputed=True, maxiter=1000, current_threshold=1e12, current_weight=1, num_fixed=1, verbose=False, target_normal=None):
     """
     Optimize the currents in a set of windowpane coils given optimized tf_coils and a plasma surface. 
     Note: this script assumes the coils are all initialized at the same current, i.e. cannot be used in an iterative loop
@@ -372,6 +372,8 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         current_weight: weight on the current threshold penalty
         num_fixed: number of TF coils per half field period to fix current for, the rest will be optimized with the wp coils
         verbose: print things during optimization
+        target_normal: target normal field on the plasma surface. If provided, optimize
+                       B·n - target_normal instead of vacuum B·n.
     Returns:
         bs: optimized BiotSavart object
     """
@@ -447,9 +449,15 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             coils += paired_coils
 
         bs = BiotSavart(coils)
-        Jf = SquaredFlux(surf_plasma, bs, definition=definition) # we do this through the above now, just using this to get dofs
+        Jf = SquaredFlux(surf_plasma, bs, definition=definition, target=target_normal) # we do this through the above now, just using this to get dofs
         dofs = Jf.x
         wp_scale_factor = base_wp_coils[0].current.get_value()
+        if target_normal is None:
+            target_normal = np.zeros((surf_plasma_nphi, surf_plasma_ntheta))
+        else:
+            target_normal = np.asarray(target_normal)
+            if target_normal.shape != (surf_plasma_nphi, surf_plasma_ntheta):
+                raise ValueError("target_normal has incompatible shape for surf_plasma quadrature grid")
 
         # use this to only set dJ for dipole current dofs
         dJscale = [classify_current(dof_name, len(base_tf_coils)+1) for dof_name in Jf.dof_names]
@@ -459,20 +467,21 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             phi = surf_plasma.quadpoints_phi
             theta = surf_plasma.quadpoints_theta
             BdotN = np.sum(dofs[:,None,None]*BdotNcoil, axis=0) + np.sum(BdotNcoil_fixed, axis=0)
+            BdotN_residual = BdotN - target_normal
             if definition=='local' or definition=='normalized':
                 B = np.sum(dofs[:,None,None,None]*Bcoil, axis=0) + np.sum(Bcoil_fixed, axis=0)
                 modB = np.linalg.norm(B, axis=2)
                 BcoildotB = np.sum(Bcoil * B, axis = 3)
             # calculate the squared flux
             if definition=='local':
-                SF = 0.5 * surf_int((BdotN / modB)**2, n_norm, theta, phi)
-                gradSF = surf_int_3D((modB[None, :, :]**2 * BdotNcoil * BdotN[None,:,:] - BcoildotB * BdotN[None,:,:]**2) / modB[None, :, :]**4, n_norm, theta, phi)
+                SF = 0.5 * surf_int((BdotN_residual / modB)**2, n_norm, theta, phi)
+                gradSF = surf_int_3D((modB[None, :, :]**2 * BdotNcoil * BdotN_residual[None,:,:] - BcoildotB * BdotN_residual[None,:,:]**2) / modB[None, :, :]**4, n_norm, theta, phi)
             elif definition=='normalized':
-                SF = 0.5 * surf_int(BdotN**2, n_norm, theta, phi) /  surf_int(modB**2, n_norm, theta, phi)
-                gradSF = (surf_int_3D(modB[None, :, :]**2, n_norm, theta, phi) * surf_int_3D(BdotNcoil * BdotN[None,:,:], n_norm, theta, phi) - surf_int_3D(BcoildotB, n_norm, theta, phi) * surf_int_3D(BdotN[None,:,:]**2, n_norm, theta, phi)) / surf_int_3D(modB[None, :, :]**2 , n_norm, theta, phi)**2
+                SF = 0.5 * surf_int(BdotN_residual**2, n_norm, theta, phi) /  surf_int(modB**2, n_norm, theta, phi)
+                gradSF = (surf_int_3D(modB[None, :, :]**2, n_norm, theta, phi) * surf_int_3D(BdotNcoil * BdotN_residual[None,:,:], n_norm, theta, phi) - surf_int_3D(BcoildotB, n_norm, theta, phi) * surf_int_3D(BdotN_residual[None,:,:]**2, n_norm, theta, phi)) / surf_int_3D(modB[None, :, :]**2 , n_norm, theta, phi)**2
             else: # regular quadratic flux definition
-                SF = 0.5 * surf_int(BdotN**2, n_norm, theta, phi) 
-                gradSF = surf_int_3D(BdotNcoil * BdotN[None,:,:],n_norm, theta, phi)
+                SF = 0.5 * surf_int(BdotN_residual**2, n_norm, theta, phi) 
+                gradSF = surf_int_3D(BdotNcoil * BdotN_residual[None,:,:],n_norm, theta, phi)
             # this is a hardcoded current threshold penalty
             Jcp = np.sum(dJscale*np.array([np.maximum(np.abs(dofs[i]*wp_scale_factor) - current_threshold, 0)**2 for i in range(len(dofs))]))
             dJcp = dJscale * np.array([derivativeJcp(dofs[i]*wp_scale_factor, current_threshold) for i in range(len(dofs))])
@@ -488,7 +497,7 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
     else:
         coils = coils_via_symmetries([c.curve for c in base_tf_coils + base_wp_coils], [c.current for c in base_tf_coils + base_wp_coils], surf_plasma.nfp, surf_plasma.stellsym)
         bs = BiotSavart(coils)
-        Jf = SquaredFlux(surf_plasma, bs, definition=definition)
+        Jf = SquaredFlux(surf_plasma, bs, definition=definition, target=target_normal)
         dofs = Jf.x
         def fun(dofs, info={'Nfeval':0}):
             info['Nfeval'] += 1
@@ -605,7 +614,7 @@ def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_conf
     plt.close()
     return
 
-def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
+def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config, vc = None):
     """
     Creates Bnormal and modB plots for Biot-Savart object on plasma surface.
     
@@ -615,7 +624,7 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
         output_dir (str): Directory to save plots
         label (str): Label for the plot title and filename
         plot_config (PlotConfig): Plot formatting configuration
-    
+        vc (VirtualCasing): Virtual casing object
     Returns:
         tuple: (relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm)
     """
@@ -628,7 +637,11 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
     surf_area = sqrt_area**2
     bs.set_points(surf_plas.gamma().reshape((-1, 3)))
     Bfinal = bs.B().reshape(n.shape)
-    Bfinal_norm = np.sum(Bfinal * unitn, axis=2)[:, :, None]
+    # Allow running with or without virtual casing external normal data.
+    external_normal = getattr(vc, "B_external_normal", None)
+    if external_normal is None:
+        external_normal = np.zeros((len(phi), len(theta)))
+    Bfinal_norm = (np.sum(Bfinal * unitn, axis=2) - external_normal)[:, :, None]
     modBfinal = np.sqrt(np.sum(Bfinal**2, axis=2))[:, :, None]
     relBfinal_norm = Bfinal_norm / modBfinal
     abs_relBfinal_norm_dA = np.abs(relBfinal_norm.reshape((-1, 1))) * surf_area
@@ -732,7 +745,7 @@ def plot_cross_section(surf, VV, output_dir, label, plot_config, base_dipole_coi
         for coil in base_dipole_coils:
             curve = coil.curve
             # Prefer dofs if present; otherwise fall back to geometric center
-            if hasattr(wp.curve, "dof_names") and "X" in wp.curve.dof_names:
+            if hasattr(curve, "dof_names") and "X" in curve.dof_names:
                 x0 = curve.get("X")
                 y0 = curve.get("Y")
                 z0 = curve.get("Z")

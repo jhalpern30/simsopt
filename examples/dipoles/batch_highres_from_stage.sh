@@ -7,6 +7,7 @@
 #
 # Usage (from examples/dipoles, or submit as a Slurm job):
 #   ./batch_highres_from_stage.sh
+# Optional iota window (from results.json): export IOTA_MIN=0.10 IOTA_MAX=0.12; sbatch --export=ALL batch_highres_from_stage.sh
 #
 # Edit USER SETTINGS below. Current weight in --current-weight-schedule is taken
 # from the stage folder name (e.g. stage00_cw0.25 -> 0.25) so only that stage
@@ -45,6 +46,11 @@ MAXITER=1
 # from SOURCE_STAGE (e.g. stage00_cw0.25 -> 0.25).
 CW_SCHEDULE=""
 
+# Optional inclusive iota filter (from results.json iota_target). Empty = all iotas.
+# Example: IOTA_MIN=0.10 IOTA_MAX=0.12 sbatch batch_highres_from_stage.sh
+: "${IOTA_MIN:=}"
+: "${IOTA_MAX:=}"
+
 # Threading for each Python process
 export OMP_NUM_THREADS=8
 _SLURM_CPUS="${SLURM_CPUS_PER_TASK:-8}"
@@ -79,6 +85,11 @@ echo "Scan root:         $SCAN_ROOT"
 echo "Source stage:      $SOURCE_STAGE/$SOURCE_RES"
 echo "Target resolution: mpol${MPOL}_ntor${NTOR}, maxiter=$MAXITER"
 echo "Current weights:   $CW_SCHEDULE"
+if [[ -n "${IOTA_MIN}" || -n "${IOTA_MAX}" ]]; then
+  echo "Iota filter:       [${IOTA_MIN:-<none>}, ${IOTA_MAX:-<none>}] inclusive"
+else
+  echo "Iota filter:       <none>"
+fi
 echo "OMP_NUM_THREADS=$OMP_NUM_THREADS  MAX_JOBS=$MAX_JOBS"
 
 shopt -s nullglob
@@ -117,6 +128,20 @@ for iota_dir in "${IOTA_DIRS[@]}"; do
   fi
 
   IOTA_TARGET="$(python3 -c "import json; d=json.load(open(r'''$INIT_DIR/results.json''')); print(d['graph']['iota_target'])")"
+
+  if ! IOTA_VAL="${IOTA_TARGET}" IOTA_MIN="${IOTA_MIN}" IOTA_MAX="${IOTA_MAX}" python3 -c "import os
+v = float(os.environ['IOTA_VAL'])
+mn = os.environ.get('IOTA_MIN', '').strip()
+mx = os.environ.get('IOTA_MAX', '').strip()
+if mn and v < float(mn):
+    raise SystemExit(1)
+if mx and v > float(mx):
+    raise SystemExit(1)
+"; then
+    echo "[$((completed + running + 1))/$total] Skip $(basename "$iota_dir"): iota_target=$IOTA_TARGET outside [${IOTA_MIN:-}, ${IOTA_MAX:-}]"
+    ((completed++)) || true
+    continue
+  fi
 
   echo "[$((completed + running + 1))/$total] Starting $(basename "$iota_dir")  iota_target=$IOTA_TARGET  init=$INIT_DIR"
 
