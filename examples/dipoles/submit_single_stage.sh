@@ -1,5 +1,4 @@
 #!/bin/bash
-#SBATCH -A m4680
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -7,7 +6,7 @@
 #SBATCH -C cpu
 #SBATCH --qos=shared
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=jacobhalpern667@gmail.com
+#SBATCH --mail-user=your_email@gmail.com
 #SBATCH --output=../slurm_outputs/%x_%j.out
 #SBATCH --error=../slurm_outputs/%x_%j.out
 
