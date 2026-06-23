@@ -1,24 +1,17 @@
 """
-Sequential / warm-started true epsilon-constraint single-stage scan over iota
-with **adaptive resolution**.
+Single-iota true epsilon-constraint optimization with **adaptive resolution**.
 
 Same physics, objective, constraints, output schema, and per-run directory
 layout as ``single_stage_true_epsilon_sequential.py``, but instead of a fixed
-(mpol, ntor) throughout the walk, a *ladder* of resolutions is climbed for
-**each** iota target before the walk advances to the next iota.
+(mpol, ntor), a *ladder* of resolutions is climbed for one iota target:
 
-Walk sequence (iota × resolution):
-  iota_min, res[0]  ->  iota_min, res[1]  ->  ...  ->  iota_min, res[-1]
-  iota_1,   res[0]  ->  iota_1,   res[1]  ->  ...  ->  iota_1,   res[-1]
-  ...
-  iota_max, res[0]  ->  iota_max, res[1]  ->  ...  ->  iota_max, res[-1]
+  res[0]  ->  res[1]  ->  ...  ->  res[-1]
 
 Warm-start chain:
-  - (iota_0,   res[0])   initialised from INIT_DIR
-  - (iota_i,   res[j+1]) warm-started from (iota_i,   res[j])   output
-  - (iota_{i+1}, res[0]) warm-started from (iota_i,   res[-1])  output  ← highest res
+  - res[0]   initialised from INIT_DIR
+  - res[j+1] warm-started from res[j] output
 
-Each (iota, resolution) pair writes its output under
+Each resolution step writes its output under
   <output-root>/<eq_name>/iota{X}_fcp{Y}kA_vt{Z}/mpol{M}_ntor{N}/
 which is the same layout as the single-resolution sequential script so all
 downstream postprocessing works unchanged.
@@ -29,13 +22,15 @@ with a Boozer residual that is more than 5 % above its target fb_threshold.
 Usage:
   python single_stage_true_epsilon_adaptive_res.py \\
       --init-dir <stage2_dir> \\
-      --iota-min 0.10 --iota-max 0.25 --iota-count 16 \\
+      --iota-target 0.15 \\
       --f-cp-threshold 150000 \\
       --resolutions 6,9,12 \\
       --fb-thresholds 1e-4,5e-5,2.5e-5
 
-Re-running with the same (iota grid, fcp, vt) skips (iota, res) pairs that
-already have a converged results.json; pass --new to force a full re-run.
+Re-running with the same (iota, fcp, vt) skips resolution steps that already
+have a converged results.json; pass --new to force a full re-run.
+
+Pass --sparse to remove outboard-midplane dipoles before optimization.
 """
 
 import os
@@ -57,26 +52,34 @@ import matplotlib.pyplot as plt
 from helper_functions import *
 from boozer_functions import *
 
+
+def coil_center_theta(coil, major_radius):
+    gamma = coil.curve.gamma()
+    center = np.mean(gamma, axis=0)
+    x0, y0, z0 = center
+    r0 = np.sqrt(x0 * x0 + y0 * y0)
+    return np.mod(np.arctan2(z0, r0 - major_radius), 2 * np.pi)
+
+
+def angular_distance_to_zero(theta):
+    return np.minimum(theta, 2 * np.pi - theta)
+
+
 # ==============================================================================
 # CLI
 # ==============================================================================
 parser = argparse.ArgumentParser(
     description=(
-        "Sequential warm-started true epsilon-constraint single-stage scan "
-        "with adaptive resolution: walks iota from min to max, climbing a "
-        "resolution ladder for each iota target before advancing."
+        "Single-iota true epsilon-constraint run with adaptive resolution: "
+        "climbs a resolution ladder for one iota target."
     )
 )
 parser.add_argument("--init-dir", type=str, required=True,
     help="Directory with bs_opt.json, results.json, and surf_opt.json used to start "
-         "the very first (iota, resolution) point in the walk.  Can be either a "
-         "stage-2 output directory OR a previous single-stage run directory.")
-parser.add_argument("--iota-min", type=float, required=True,
-    help="Smallest iota target in the sequential walk (start of the walk).")
-parser.add_argument("--iota-max", type=float, required=True,
-    help="Largest iota target in the sequential walk (end of the walk).")
-parser.add_argument("--iota-count", type=int, required=True,
-    help="Number of iota targets (linspace(iota-min, iota-max, iota-count)).")
+         "the first resolution step.  Can be either a stage-2 output directory OR "
+         "a previous single-stage run directory.")
+parser.add_argument("--iota-target", type=float, required=True,
+    help="Single iota target for this run.")
 parser.add_argument("--f-cp-threshold", type=float, required=True,
     help="Current p-norm upper bound [A] (constant across the walk).")
 parser.add_argument("--resolutions", type=str, required=True,
@@ -97,17 +100,22 @@ parser.add_argument("--volume-target", type=float, default=0.3,
     help="Target volume of the Boozer surface (default: 0.3).")
 parser.add_argument("--output-root", type=str,
     default="../single_stage_true_epsilon_adaptive_res",
-    help="Top-level output directory; per-iota subdirs are placed under "
+    help="Top-level output directory; run outputs are placed under "
          "<output-root>/<eq_name>/iota<X>_fcp<Y>kA_vt<Z>/mpol<M>_ntor<N>/.")
 parser.add_argument(
     "--new",
     action="store_true",
     default=False,
     help=(
-        "Start the walk from scratch: do not skip (iota, resolution) pairs that "
-        "already have a converged results.json.  Default behaviour resumes a "
-        "partially finished walk."
+        "Start from scratch: do not skip resolution steps that already have a "
+        "converged results.json.  Default behaviour resumes a partially finished run."
     ),
+)
+parser.add_argument(
+    "--sparse",
+    action="store_true",
+    default=False,
+    help="Remove outboard-midplane dipoles before optimization.",
 )
 args, _ = parser.parse_known_args()
 
@@ -132,20 +140,19 @@ if len(resolutions) == 0:
 
 # ---------- unpack remaining args ----------
 INIT_DIR       = args.init_dir
-IOTA_MIN       = args.iota_min
-IOTA_MAX       = args.iota_max
-IOTA_COUNT     = args.iota_count
+IOTA_TARGET    = args.iota_target
 FCP_THRESHOLD  = args.f_cp_threshold
 IOTA_THRESHOLD = args.iota_threshold
 MAXITER        = args.maxiter
 VOL_TARGET     = args.volume_target
 OUTPUT_ROOT    = args.output_root
 START_FRESH    = args.new
+SPARSE         = args.sparse
 
-if IOTA_COUNT < 1:
-    raise ValueError("--iota-count must be >= 1.")
-if IOTA_MAX < IOTA_MIN:
-    raise ValueError("--iota-max must be >= --iota-min.")
+METHOD_NAME = (
+    "true_epsilon_constraint_adaptive_res_sparse"
+    if SPARSE else "true_epsilon_constraint_sequential_adaptive_res"
+)
 
 # Fixed internal parameters (same as the single-resolution sequential script).
 BOOZER_CW        = 1.0
@@ -153,6 +160,7 @@ PENALTY_WEIGHT   = 100.0
 CURRENT_P_NORM   = 20.0
 GTOL             = 1e-3
 CURRENT_SCALE    = 100.0 # penalize the current more strongly than the residual
+THETA_TOL        = 0.01  # outboard dipole removal tolerance [rad] when --sparse
 
 # Tolerance for the per-step convergence warning (5 % above threshold).
 FB_WARN_MARGIN   = 0.05
@@ -243,15 +251,12 @@ eq_name = init_results["eq_name"]
 EQ_OUT_ROOT = os.path.join(OUTPUT_ROOT, eq_name)
 os.makedirs(EQ_OUT_ROOT, exist_ok=True)
 
-iota_targets = np.linspace(IOTA_MIN, IOTA_MAX, IOTA_COUNT)
-
-
-def _per_iota_out_dir(iota_target, mpol, ntor):
+def _per_res_out_dir(mpol, ntor):
     """Directory for a single (iota, mpol, ntor) point -- same naming as the
     single-resolution scripts so downstream postprocessing is unchanged."""
     parent = os.path.join(
         EQ_OUT_ROOT,
-        f"iota{iota_target:g}_fcp{FCP_THRESHOLD / 1e3:g}kA_vt{VOL_TARGET:g}",
+        f"iota{IOTA_TARGET:g}_fcp{FCP_THRESHOLD / 1e3:g}kA_vt{VOL_TARGET:g}",
     )
     return os.path.join(parent, f"mpol{mpol}_ntor{ntor}")
 
@@ -296,11 +301,14 @@ def _next_iteration_index_from_history(out_dir):
 # ==============================================================================
 # Initial coils + surface
 # ==============================================================================
-print(f"Adaptive-resolution sequential true epsilon-constraint scan: "
+print(f"Adaptive-resolution true epsilon-constraint run: "
       f"{datetime.now():%Y-%m-%d %H:%M:%S}")
 print(f"  init-dir:    {INIT_DIR}")
 print(f"  output root: {EQ_OUT_ROOT}")
-print(f"  iota grid:   {[f'{x:g}' for x in iota_targets]}")
+print(f"  iota target: {IOTA_TARGET:g}")
+print(f"  sparse:      {SPARSE}")
+if SPARSE:
+    print(f"  theta_tol:   {THETA_TOL:g}")
 print(f"  f_CP:        {FCP_THRESHOLD:.0f} A")
 print(f"  vt:          {VOL_TARGET:g}")
 print(f"  resolution ladder:")
@@ -342,9 +350,31 @@ VV.set_rc(1, 0, init_results["VV_a"])
 VV.set_zs(1, 0, init_results["VV_b"])
 
 num_tf = init_results["ntf"] * 2 * init_results["surf_nfp"]
-coils = bs.coils
-tf_coils = coils[:num_tf]
-dipole_coils = coils[num_tf:]
+coils_dense = bs.coils
+tf_coils = coils_dense[:num_tf]
+dipole_coils_dense = coils_dense[num_tf:]
+
+removed_dipoles = []
+if SPARSE:
+    dipole_coils = []
+    for idx, coil in enumerate(dipole_coils_dense):
+        theta = coil_center_theta(coil, init_results["VV_R0"])
+        if angular_distance_to_zero(theta) <= THETA_TOL:
+            removed_dipoles.append((idx, theta))
+        else:
+            dipole_coils.append(coil)
+    if len(dipole_coils) == 0:
+        raise RuntimeError("All dipole coils were removed; relax THETA_TOL.")
+    coils = tf_coils + dipole_coils
+    bs = BiotSavart(coils)
+    print(
+        f"  dipoles: kept {len(dipole_coils)} / {len(dipole_coils_dense)}, "
+        f"removed {len(removed_dipoles)}"
+    )
+else:
+    coils = coils_dense
+    dipole_coils = dipole_coils_dense
+
 for c in dipole_coils:
     c.curve.fix_all()
 for c in tf_coils:
@@ -382,7 +412,7 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
     """
     if gtol is None:
         gtol = GTOL
-    out_dir = _per_iota_out_dir(iota_target, mpol, ntor)
+    out_dir = _per_res_out_dir(mpol, ntor)
     os.makedirs(out_dir, exist_ok=True)
 
     # ---- Boozer surface for this (iota, resolution) ----
@@ -443,6 +473,11 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
     else:
         print(f"  fresh step: up to {maxiter_scipy} BFGS iteration(s) (cap {MAXITER}).")
     print(f"Resolution ladder: {resolutions}  fb_thresholds: {fb_thresholds}")
+    if SPARSE:
+        print(
+            f"Dipole sparsity: kept={len(dipole_coils)} "
+            f"removed={len(removed_dipoles)} theta_tol={THETA_TOL:g}"
+        )
     if resume_this_step:
         print(f"Resuming in-place from existing checkpoint at callback it={next_it}.")
     print(f"# TF: {len(tf_coils)},  # dipole: {len(dipole_coils)}")
@@ -564,11 +599,18 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
                     "penalty_weight": PENALTY_WEIGHT,
                     "mpol": mpol, "ntor": ntor,
                     "maxiter": MAXITER,
-                    "sequential_walk": True,
                     "adaptive_resolution": True,
                     "resolution_ladder": resolutions,
                     "fb_threshold_ladder": fb_thresholds,
                     "warm_start_from": prev_load_dir,
+                    **(
+                        {
+                            "sparse_run": True,
+                            "theta_tol": THETA_TOL,
+                            "removed_outboard_dipoles": len(removed_dipoles),
+                        }
+                        if SPARSE else {}
+                    ),
                 },
                 "iterations": [],
             }
@@ -599,7 +641,7 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
 
         partial_results = {
             "graph": {"init_dir": INIT_DIR, "load_dir": prev_load_dir},
-            "method": "true_epsilon_constraint_sequential_adaptive_res",
+            "method": METHOD_NAME,
             "mpol": mpol, "ntor": ntor,
             "iota_target": iota_target,
             "f_b_threshold": fb_threshold,
@@ -613,6 +655,14 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
             "max_current": max_I,
             "# TF coils": len(tf_coils),
             "# dipole coils": len(dipole_coils),
+            **(
+                {
+                    "sparse_run": True,
+                    "theta_tol": THETA_TOL,
+                    "removed_outboard_dipoles": len(removed_dipoles),
+                }
+                if SPARSE else {}
+            ),
             **shared_meta,
         }
         save(partial_results, os.path.join(out_dir, "results.json"))
@@ -687,7 +737,7 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
 
     results_output = {
         "graph": {"init_dir": INIT_DIR, "load_dir": prev_load_dir},
-        "method": "true_epsilon_constraint_sequential_adaptive_res",
+        "method": METHOD_NAME,
 
         # Configuration
         "mpol": mpol,
@@ -700,13 +750,17 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
         "penalty_weight": PENALTY_WEIGHT,
         "current_pnorm_p": CURRENT_P_NORM,
         "gtol": gtol,
-        "sequential_walk": True,
         "adaptive_resolution": True,
         "resolution_ladder": resolutions,
         "fb_threshold_ladder": fb_thresholds,
-        "iota_walk_min": IOTA_MIN,
-        "iota_walk_max": IOTA_MAX,
-        "iota_walk_count": IOTA_COUNT,
+        **(
+            {
+                "sparse_run": True,
+                "theta_tol": THETA_TOL,
+                "removed_outboard_dipoles": len(removed_dipoles),
+            }
+            if SPARSE else {}
+        ),
 
         # Optimization results
         "optimization_success": bool(res.success),
@@ -741,106 +795,97 @@ def optimize_one_iota(iota_target, prev_load_dir, mpol, ntor, fb_threshold,
 
 
 # ==============================================================================
-# WALK  iota_min -> iota_max  ×  res[0] -> res[-1]
-#
-# Outer loop: iota targets (low -> high, warm-started from highest-res prev iota)
-# Inner loop: resolution ladder (low -> high, warm-started within each iota)
+# CLIMB  res[0] -> res[-1]  for a single iota target
 # ==============================================================================
 walk_start = time.time()
-# prev_load_dir tracks the warm-start for the *next* (iota, res) step:
-#   - after (iota_i, res[j])  it points to that step's output dir
-#   - so (iota_i, res[j+1])  warm-starts correctly
-#   - and (iota_{i+1}, res[0]) warm-starts from the res[-1] of iota_i
 prev_load_dir = INIT_DIR
 
-for k, iota_target in enumerate(iota_targets):
-    for j, (res_val, fb_thresh) in enumerate(zip(resolutions, fb_thresholds)):
-        mpol = ntor = res_val
-        out_dir = _per_iota_out_dir(iota_target, mpol, ntor)
+for j, (res_val, fb_thresh) in enumerate(zip(resolutions, fb_thresholds)):
+    mpol = ntor = res_val
+    out_dir = _per_res_out_dir(mpol, ntor)
+    step_label = f"[res {j + 1}/{len(resolutions)}] iota={IOTA_TARGET:g} mpol={mpol}"
 
-        step_label = (f"[iota {k + 1}/{IOTA_COUNT}, res {j + 1}/{len(resolutions)}]"
-                      f"  iota={iota_target:g}  mpol={mpol}")
-
-        # ---- Resume: skip already-converged (iota, res) pairs ----
-        if (not START_FRESH) and _is_completed(out_dir):
-            print(
-                f"\n{step_label}: already completed, "
-                f"loading {out_dir} as warm start for next step."
-            )
-            bs = load(os.path.join(out_dir, "bs_opt.json"))
-            surf = load(os.path.join(out_dir, "surf_opt.json"))
-            coils = bs.coils
-            tf_coils = coils[:num_tf]
-            dipole_coils = coils[num_tf:]
-            for c in dipole_coils:
-                c.curve.fix_all()
-            for c in tf_coils:
-                c.current.fix_all()
-            prev_load_dir = out_dir
-            continue
-
-        # ---- Resume: in-progress checkpoint ----
-        resume_this_step = False
-        if (not START_FRESH) and _has_checkpoint(out_dir):
-            print(
-                f"\n{step_label}: found in-progress checkpoint, resuming from {out_dir}."
-            )
-            bs = load(os.path.join(out_dir, "bs_opt.json"))
-            surf = load(os.path.join(out_dir, "surf_opt.json"))
-            coils = bs.coils
-            tf_coils = coils[:num_tf]
-            dipole_coils = coils[num_tf:]
-            for c in dipole_coils:
-                c.curve.fix_all()
-            for c in tf_coils:
-                c.current.fix_all()
-            # Do NOT update prev_load_dir here.  It already holds the actual
-            # upstream warm-start directory (set by a prior completed-skip or
-            # INIT_DIR for the first step) and is used for accurate
-            # graph.load_dir provenance in results.json.  The coil/surface
-            # state is loaded from the checkpoint above; prev_load_dir is only
-            # metadata and will be updated to out_dir after the step completes.
-            resume_this_step = True
-
-        print(f"\n{step_label}: starting  (warm start from {prev_load_dir})")
-        step_t0 = time.time()
-        is_highest_res = (j == len(resolutions) - 1)
-        step_gtol = 0.1 * GTOL if is_highest_res else GTOL
-        out_dir, boozer_surface = optimize_one_iota(
-            iota_target, prev_load_dir, mpol, ntor, fb_thresh,
-            gtol=step_gtol,
-            resume_this_step=resume_this_step,
-        )
-
-        # ---- Convergence warning ----
-        try:
-            step_results = load(os.path.join(out_dir, "results.json"))
-            final_fb = float(step_results.get("boozer_residual", float("inf")))
-        except Exception:
-            final_fb = float("inf")
-
-        if final_fb > fb_thresh * (1.0 + FB_WARN_MARGIN):
-            warnings.warn(
-                f"{step_label}: Boozer residual {final_fb:.3e} exceeds threshold "
-                f"{fb_thresh:.3e} by more than {FB_WARN_MARGIN * 100:.0f}%. "
-                f"Consider increasing MAXITER or using a looser fb_threshold for this "
-                f"resolution level.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-
+    # ---- Resume: skip already-converged resolution steps ----
+    if (not START_FRESH) and _is_completed(out_dir):
         print(
-            f"{step_label}: done in {(time.time() - step_t0) / 60:.1f} min -> {out_dir}"
+            f"\n{step_label}: already completed, "
+            f"loading {out_dir} as warm start for next step."
+        )
+        bs = load(os.path.join(out_dir, "bs_opt.json"))
+        surf = load(os.path.join(out_dir, "surf_opt.json"))
+        # Refresh global coil references to point at the freshly-loaded bs.
+        coils = bs.coils
+        tf_coils = coils[:num_tf]
+        dipole_coils = coils[num_tf:]
+        for c in dipole_coils:
+            c.curve.fix_all()
+        for c in tf_coils:
+            c.current.fix_all()
+        prev_load_dir = out_dir
+        continue
+
+    # ---- Resume: in-progress checkpoint ----
+    resume_this_step = False
+    if (not START_FRESH) and _has_checkpoint(out_dir):
+        print(
+            f"\n{step_label}: found in-progress checkpoint, resuming from {out_dir}."
+        )
+        bs = load(os.path.join(out_dir, "bs_opt.json"))
+        surf = load(os.path.join(out_dir, "surf_opt.json"))
+        # Refresh global coil references to point at the freshly-loaded bs.
+        coils = bs.coils
+        tf_coils = coils[:num_tf]
+        dipole_coils = coils[num_tf:]
+        for c in dipole_coils:
+            c.curve.fix_all()
+        for c in tf_coils:
+            c.current.fix_all()
+        # Do NOT update prev_load_dir here.  It already holds the actual
+        # upstream warm-start directory (set by a prior completed-skip or
+        # INIT_DIR for the first step) and is used for accurate
+        # graph.load_dir provenance in results.json.  The coil/surface
+        # state is loaded from the checkpoint above; prev_load_dir is only
+        # metadata and will be updated to out_dir after the step completes.
+        resume_this_step = True
+
+    print(f"\n{step_label}: starting  (warm start from {prev_load_dir})")
+    step_t0 = time.time()
+    is_highest_res = (j == len(resolutions) - 1)
+    step_gtol = 0.1 * GTOL if is_highest_res else GTOL
+    out_dir, boozer_surface = optimize_one_iota(
+        IOTA_TARGET, prev_load_dir, mpol, ntor, fb_thresh,
+        gtol=step_gtol,
+        resume_this_step=resume_this_step,
+    )
+
+    # ---- Convergence warning ----
+    try:
+        step_results = load(os.path.join(out_dir, "results.json"))
+        final_fb = float(step_results.get("boozer_residual", float("inf")))
+    except Exception:
+        final_fb = float("inf")
+
+    if final_fb > fb_thresh * (1.0 + FB_WARN_MARGIN):
+        warnings.warn(
+            f"{step_label}: Boozer residual {final_fb:.3e} exceeds threshold "
+            f"{fb_thresh:.3e} by more than {FB_WARN_MARGIN * 100:.0f}%. "
+            f"Consider increasing MAXITER or using a looser fb_threshold for this "
+            f"resolution level.",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
-        # Re-load surf from the just-saved JSON so initialize_boozer_surface()
-        # in the next step gets a clean SurfaceRZFourier initial guess.
-        surf = load(os.path.join(out_dir, "surf_opt.json"))
-        prev_load_dir = out_dir
+    print(
+        f"{step_label}: done in {(time.time() - step_t0) / 60:.1f} min -> {out_dir}"
+    )
+
+    # Re-load surf from the just-saved JSON so initialize_boozer_surface()
+    # in the next step gets a clean SurfaceRZFourier initial guess.
+    surf = load(os.path.join(out_dir, "surf_opt.json"))
+    prev_load_dir = out_dir
 
 print(
-    f"\nAdaptive-resolution sequential walk complete: "
-    f"{IOTA_COUNT} iota targets × {len(resolutions)} resolutions = "
-    f"{IOTA_COUNT * len(resolutions)} total steps in "
+    f"\nAdaptive-resolution run complete: "
+    f"{len(resolutions)} resolution steps in "
     f"{(time.time() - walk_start) / 60:.1f} min total."
 )
