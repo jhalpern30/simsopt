@@ -357,7 +357,7 @@ def derivativeJcp(current, CURRENT_THRESHOLD):
     grad = np.where(current > 0, 2 * (current - CURRENT_THRESHOLD), 2 * (current + CURRENT_THRESHOLD))
     return grad * mask
 
-def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, definition='local', precomputed=True, maxiter=1000, current_threshold=1e12, current_weight=1, num_fixed=1, verbose=False):
+def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, definition='local', precomputed=True, maxiter=1000, current_threshold=1e12, current_weight=1, num_fixed=1, verbose=False, target_normal=None):
     """
     Optimize the currents in a set of windowpane coils given optimized tf_coils and a plasma surface. 
     Note: this script assumes the coils are all initialized at the same current, i.e. cannot be used in an iterative loop
@@ -372,12 +372,23 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
         current_weight: weight on the current threshold penalty
         num_fixed: number of TF coils per half field period to fix current for, the rest will be optimized with the wp coils
         verbose: print things during optimization
-    Returns:
-        bs: optimized BiotSavart object
+        target_normal: optional ndarray of shape (nphi, ntheta) giving a target B.n on ``surf_plasma``
+                       (e.g. the plasma-current contribution from a VirtualCasing calculation).
+                       When supplied, the objective minimizes (B_coils.n - target_normal)^2 so that
+                       the coil field cancels the target normal field in addition to producing zero
+                       total B.n on flux surfaces. Must match ``surf_plasma.normal().shape[:2]``.
     """
     nprint = 5 # print J every nprint steps
     if definition!='local' and definition!='normalized' and definition!='quadratic flux':
         raise ValueError('definition must either be "local", "normalized", or "quadratic flux"')
+    if target_normal is not None:
+        target_normal = np.ascontiguousarray(target_normal)
+        expected_shape = surf_plasma.normal().shape[:2]
+        if target_normal.shape != expected_shape:
+            raise ValueError(
+                f"target_normal shape {target_normal.shape} does not match "
+                f"surf_plasma grid {expected_shape}"
+            )
     base_coils = base_tf_coils + base_wp_coils
 
     # fix the currents in some TF coils (so that we avoid the trivial solution), choose either 1 or ntf
@@ -433,7 +444,16 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             if (definition=='local' or definition=='normalized'):
                 Bcoil_fixed[ii, :, :, :] = bs_fixed.B().reshape((surf_plasma_nphi, surf_plasma_ntheta, 3))
             coils += paired_coils_fixed
-        # precompute normal field from coils at initial current, which just gets scaled up/down linearly during optization
+        # Precompute normal field contribution per-dof-unit for each base wp coil.
+        # The optimization uses BdotN = sum_i dofs[i] * BdotNcoil_per_dof[i], where
+        # dofs[i] is the FREE DOF of the i-th base Current (not necessarily the
+        # physical current in Amps: for ScaledCurrent wrappers, physical_current
+        # = scale * dof). To correctly linearize over an arbitrary initial state,
+        # divide the raw Bn by the initial dof value so that dofs[i] * BdotNcoil[i]
+        # evaluates to the physical Bn at the new dof value. For plain Current
+        # objects initialized at 1 (the historical convention), dof_init=1 and
+        # this is a no-op.
+        wp_dof_init = np.zeros(ndofs)
         for ii, c  in enumerate(base_coils[num_fixed:]):
             paired_curves = apply_symmetries_to_curves(base_curves=[c.curve], nfp=surf_plasma.nfp, stellsym=surf_plasma.stellsym)
             paired_currents = apply_symmetries_to_currents(base_currents=[c.current], nfp=surf_plasma.nfp, stellsym=surf_plasma.stellsym)
@@ -441,15 +461,36 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             bs_coil = BiotSavart(paired_coils)
             bs_coil.set_points(surf_plasma.gamma().reshape((-1,3)))
             i = sorted_indices.index(ii+dof_start_num)
-            BdotNcoil[i, :, :] = np.sum(bs_coil.B().reshape((surf_plasma_nphi, surf_plasma_ntheta, 3)) * surf_plasma.unitnormal(), axis = 2) # this is BdotN for each coil
+            # Free dof of this base Current (length-1 array). If it's 0 we
+            # temporarily bump it to 1 to get a well-defined per-dof slope.
+            dof_arr = np.atleast_1d(c.current.x)
+            if dof_arr.size == 0:
+                raise RuntimeError(
+                    f"Base wp coil {ii} has no free current dof; cannot precompute."
+                )
+            v_i = float(dof_arr[0])
+            if v_i == 0.0:
+                c.current.x = np.array([1.0])
+                bs_coil.recompute_bell()
+                v_i = 1.0
+            wp_dof_init[i] = v_i
+            BdotNcoil[i, :, :] = np.sum(bs_coil.B().reshape((surf_plasma_nphi, surf_plasma_ntheta, 3)) * surf_plasma.unitnormal(), axis = 2) / v_i
             if (definition=='local' or definition=='normalized'):
-                Bcoil[i, :, :, :] = bs_coil.B().reshape((surf_plasma_nphi, surf_plasma_ntheta, 3))
+                Bcoil[i, :, :, :] = bs_coil.B().reshape((surf_plasma_nphi, surf_plasma_ntheta, 3)) / v_i
             coils += paired_coils
 
         bs = BiotSavart(coils)
         Jf = SquaredFlux(surf_plasma, bs, definition=definition) # we do this through the above now, just using this to get dofs
         dofs = Jf.x
-        wp_scale_factor = base_wp_coils[0].current.get_value()
+        # The original code used `wp_scale_factor = base_wp_coils[0].current.get_value()`
+        # to convert "dof units" to Amps for the current penalty, assuming all wp
+        # coils use the same scale. That still holds whenever all base_wp_coils share
+        # a common scale (e.g. uniform ScaledCurrent factor), which is the typical
+        # case. Compute the physical-Amps-per-dof ratio for coil 0 and use it
+        # consistently; callers with mixed scales can set current_weight=0.
+        _I0 = base_wp_coils[0].current.get_value()
+        _v0 = float(np.atleast_1d(base_wp_coils[0].current.x)[0]) if np.atleast_1d(base_wp_coils[0].current.x).size else 1.0
+        wp_scale_factor = (_I0 / _v0) if _v0 != 0.0 else 1.0
 
         # use this to only set dJ for dipole current dofs
         dJscale = [classify_current(dof_name, len(base_tf_coils)+1) for dof_name in Jf.dof_names]
@@ -459,20 +500,26 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
             phi = surf_plasma.quadpoints_phi
             theta = surf_plasma.quadpoints_theta
             BdotN = np.sum(dofs[:,None,None]*BdotNcoil, axis=0) + np.sum(BdotNcoil_fixed, axis=0)
+            # When a target normal field is supplied (e.g. from virtual casing), we
+            # optimize the residual (B_coils.n - target) rather than B_coils.n itself.
+            if target_normal is not None:
+                BdotN_res = BdotN - target_normal
+            else:
+                BdotN_res = BdotN
             if definition=='local' or definition=='normalized':
                 B = np.sum(dofs[:,None,None,None]*Bcoil, axis=0) + np.sum(Bcoil_fixed, axis=0)
                 modB = np.linalg.norm(B, axis=2)
                 BcoildotB = np.sum(Bcoil * B, axis = 3)
             # calculate the squared flux
             if definition=='local':
-                SF = 0.5 * surf_int((BdotN / modB)**2, n_norm, theta, phi)
-                gradSF = surf_int_3D((modB[None, :, :]**2 * BdotNcoil * BdotN[None,:,:] - BcoildotB * BdotN[None,:,:]**2) / modB[None, :, :]**4, n_norm, theta, phi)
+                SF = 0.5 * surf_int((BdotN_res / modB)**2, n_norm, theta, phi)
+                gradSF = surf_int_3D((modB[None, :, :]**2 * BdotNcoil * BdotN_res[None,:,:] - BcoildotB * BdotN_res[None,:,:]**2) / modB[None, :, :]**4, n_norm, theta, phi)
             elif definition=='normalized':
-                SF = 0.5 * surf_int(BdotN**2, n_norm, theta, phi) /  surf_int(modB**2, n_norm, theta, phi)
-                gradSF = (surf_int_3D(modB[None, :, :]**2, n_norm, theta, phi) * surf_int_3D(BdotNcoil * BdotN[None,:,:], n_norm, theta, phi) - surf_int_3D(BcoildotB, n_norm, theta, phi) * surf_int_3D(BdotN[None,:,:]**2, n_norm, theta, phi)) / surf_int_3D(modB[None, :, :]**2 , n_norm, theta, phi)**2
+                SF = 0.5 * surf_int(BdotN_res**2, n_norm, theta, phi) /  surf_int(modB**2, n_norm, theta, phi)
+                gradSF = (surf_int_3D(modB[None, :, :]**2, n_norm, theta, phi) * surf_int_3D(BdotNcoil * BdotN_res[None,:,:], n_norm, theta, phi) - surf_int_3D(BcoildotB, n_norm, theta, phi) * surf_int_3D(BdotN_res[None,:,:]**2, n_norm, theta, phi)) / surf_int_3D(modB[None, :, :]**2 , n_norm, theta, phi)**2
             else: # regular quadratic flux definition
-                SF = 0.5 * surf_int(BdotN**2, n_norm, theta, phi) 
-                gradSF = surf_int_3D(BdotNcoil * BdotN[None,:,:],n_norm, theta, phi)
+                SF = 0.5 * surf_int(BdotN_res**2, n_norm, theta, phi) 
+                gradSF = surf_int_3D(BdotNcoil * BdotN_res[None,:,:],n_norm, theta, phi)
             # this is a hardcoded current threshold penalty
             Jcp = np.sum(dJscale*np.array([np.maximum(np.abs(dofs[i]*wp_scale_factor) - current_threshold, 0)**2 for i in range(len(dofs))]))
             dJcp = dJscale * np.array([derivativeJcp(dofs[i]*wp_scale_factor, current_threshold) for i in range(len(dofs))])
@@ -488,7 +535,7 @@ def optimize_windowpane_currents(base_wp_coils, base_tf_coils, surf_plasma, defi
     else:
         coils = coils_via_symmetries([c.curve for c in base_tf_coils + base_wp_coils], [c.current for c in base_tf_coils + base_wp_coils], surf_plasma.nfp, surf_plasma.stellsym)
         bs = BiotSavart(coils)
-        Jf = SquaredFlux(surf_plasma, bs, definition=definition)
+        Jf = SquaredFlux(surf_plasma, bs, target=target_normal, definition=definition)
         dofs = Jf.x
         def fun(dofs, info={'Nfeval':0}):
             info['Nfeval'] += 1
@@ -583,7 +630,10 @@ def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_conf
     cmap = plt.cm.seismic  # Diverging colormap (red-negative, blue-positive)
     colors = cmap(norm(currents))
     fig, ax = plt.subplots(figsize=(8,6))
-    scatter = ax.scatter(phis/(2*np.pi), thetas/(2*np.pi), edgecolors=colors, facecolors='none', s=200, linewidths=1.5)
+    theta_norm = thetas / (2 * np.pi)
+    theta_norm = np.clip(theta_norm, 0.0, 1.0)
+    theta_norm = np.where(np.isclose(theta_norm, 1.0, atol=1e-12, rtol=0.0), 0.0, theta_norm)
+    scatter = ax.scatter(phis/(2*np.pi), theta_norm, edgecolors=colors, facecolors='none', s=200, linewidths=1.5)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, ax=ax)
     cbar.ax.set_ylabel("WP Currents [kA]", fontsize=plot_config.cbarfontsize, fontweight='bold')
@@ -599,7 +649,7 @@ def plot_coil_currents_on_theta_phi_grid(coils, VV, output_dir, label, plot_conf
     plt.close()
     return
 
-def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
+def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config, vc=None):
     """
     Creates Bnormal and modB plots for Biot-Savart object on plasma surface.
     
@@ -609,6 +659,9 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
         output_dir (str): Directory to save plots
         label (str): Label for the plot title and filename
         plot_config (PlotConfig): Plot formatting configuration
+        vc (optional): VirtualCasing object whose ``B_external_normal`` (shape ``(nphi, ntheta)``)
+            provides a target normal field. When supplied, the plot shows the residual
+            (B_coils.n - B_external_normal) / |B_coils| instead of B_coils.n / |B_coils|.
     
     Returns:
         tuple: (relBfinal_norm, mean_abs_relBfinal_norm, max_relBfinal_norm)
@@ -623,21 +676,33 @@ def plot_relBfinal_norm_modB(bs, surf_plas, output_dir, label, plot_config):
     bs.set_points(surf_plas.gamma().reshape((-1, 3)))
     Bfinal = bs.B().reshape(n.shape)
     Bfinal_norm = np.sum(Bfinal * unitn, axis=2)[:, :, None]
+    if vc is not None:
+        target_bn = np.asarray(vc.B_external_normal)
+        if target_bn.shape != Bfinal_norm.shape[:2]:
+            raise ValueError(
+                f"vc.B_external_normal shape {target_bn.shape} does not match "
+                f"surf_plas grid {Bfinal_norm.shape[:2]}"
+            )
+        Bfinal_norm = Bfinal_norm - target_bn[:, :, None]
     modBfinal = np.sqrt(np.sum(Bfinal**2, axis=2))[:, :, None]
     relBfinal_norm = Bfinal_norm / modBfinal
     abs_relBfinal_norm_dA = np.abs(relBfinal_norm.reshape((-1, 1))) * surf_area
     mean_abs_relBfinal_norm = np.sum(abs_relBfinal_norm_dA) / np.sum(surf_area)
     max_rBnorm = np.max(np.abs(relBfinal_norm))
+    cbar_label = (r'$(\mathbf{B}\cdot\mathbf{n} - B_{n,\mathrm{ext}})/|\mathbf{B}|$'
+                  if vc is not None else r'$\mathbf{B}\cdot\mathbf{n}/|\mathbf{B}|$')
+    title_prefix = 'Residual ' if vc is not None else ''
+    file_suffix = '_resid' if vc is not None else ''
     fig, ax = plt.subplots()
     contour = ax.contourf(phi, theta, np.squeeze(relBfinal_norm).T, levels=50, cmap='coolwarm', vmin=-max_rBnorm, vmax=max_rBnorm)
     ax.set_xlabel(r'$\phi/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     ax.set_ylabel(r'$\theta/2\pi$', fontsize=plot_config.axisfontsize, fontweight='bold')
     cbar = fig.colorbar(contour, ax=ax)
-    cbar.ax.set_ylabel(r'$\mathbf{B}\cdot\mathbf{n}/|\mathbf{B}|$', fontsize=plot_config.cbarfontsize, fontweight='bold')
+    cbar.ax.set_ylabel(cbar_label, fontsize=plot_config.cbarfontsize, fontweight='bold')
     cbar.ax.tick_params(axis='y', which='major', labelsize=plot_config.ticklabelfontsize)
-    ax.set_title(f'Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=plot_config.titlefontsize, fontweight='bold')
+    ax.set_title(f'{title_prefix}Surface-averaged \n |Bn|/|B| = {mean_abs_relBfinal_norm:.4e}', fontsize=plot_config.titlefontsize, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'relBn_{label}.png'), dpi=plot_config.dpi)
+    plt.savefig(os.path.join(output_dir, f'relBn{file_suffix}_{label}.png'), dpi=plot_config.dpi)
     plt.close()
     abs_modBfinal_dA = np.abs(modBfinal.reshape((-1, 1))) * surf_area
     mean_abs_modBfinal = np.sum(abs_modBfinal_dA) / np.sum(surf_area)
