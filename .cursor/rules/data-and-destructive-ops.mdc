@@ -1,0 +1,11 @@
+---
+description: Avoid destructive filesystem or data operations unless explicitly requested
+alwaysApply: true
+---
+
+# Data and destructive operations
+
+- Do **not** add features that **delete**, move, or overwrite user research outputs (optimization run directories, `results.json`, `wout*.nc`, scan trees, logs, plots) unless the user **explicitly** asks to remove files or delete data.
+- Phrases like “filter out”, “exclude from plot”, “don’t show”, or “skip” mean **non-destructive** behavior (omit from a list, filter when reading, hide in UI). **Do not** interpret them as permission to delete directories or files.
+- If a feature could be implemented either by filtering or by deleting on disk, **always implement filtering** unless the user clearly requests deletion.
+- Before implementing `rm`, `shutil.rmtree`, or similar in analysis or postprocessing scripts, **confirm** the user wants permanent removal; default to safe read-only behavior.

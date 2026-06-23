@@ -62,7 +62,7 @@ npol_max = None
 
 # VV-plasma clearance search bounds [m]
 delta_min = 0.02
-delta_max = 0.25
+delta_max = 0.20
 
 # Plasma surface
 surf_s = 1.0
@@ -74,7 +74,7 @@ CURRENT_WEIGHT = 1e-12
 verbose = False
 
 # Set True to skip optimizations and just re-plot from existing results
-PLOT_ONLY = True
+PLOT_ONLY = False
 
 # ---------------------------------------------------------------------------
 # Geometry helpers (mirror the formula in generate_windowpane_array)

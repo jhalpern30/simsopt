@@ -19,15 +19,15 @@ from simsopt.geo import SurfaceRZFourier
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 ### Campaign Settings (edit per run) ###
-eq_name = "wout_nfp22ginsburg_000_001242"  # name of the wout file from vmec
-npol = 10        # number of poloidal windowpane coils (user-specified per run)
-ntor = 6        # number of toroidal windowpane coils (always 8)
+eq_name = "wout_nfp22ginsburg_000_000281"  # name of the wout file from vmec
+npol = 9        # number of poloidal windowpane coils (user-specified per run)
+ntor = 8        # number of toroidal windowpane coils (always 8)
 CURRENT_THRESHOLD = 1e6   # threshold for current penalty
 CURRENT_WEIGHT = 1e-12    # weight on current penalty
-n_samples = 25           # number of geometry samples to run
+n_samples = 75           # number of geometry samples to run
 
 # Define output parent folder
-output_subfolder = f"stage_2_npol{npol}_ntor{ntor}_{eq_name}_ntf_3"
+output_subfolder = f"stage_2_npol{npol}_ntor{ntor}_{eq_name}"
 parent_run_dir = os.path.join(script_dir, f"../outputs/{output_subfolder}")
 os.makedirs(parent_run_dir, exist_ok=True)
 
@@ -54,7 +54,7 @@ VV_b_min = (Zmax - Zmin) / 2
 print(f"VV_Ravg = {VV_Ravg:.4f}, VV_a_min = {VV_a_min:.4f}, VV_b_min = {VV_b_min:.4f}")
 
 # TF coils parameters
-ntf = 3
+ntf = 4
 num_fixed = ntf           # all currents are fixed in TF coils
 field_on_axis = 0.5       # on-axis magnetic field (Tesla)
 fixed_geo_TFs = True
